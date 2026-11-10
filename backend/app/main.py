@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app import __version__
-from app.api import health, projects, transcriptions
+from app.api import exports, health, projects, screenshots, transcriptions
 from app.config import get_settings
 from app.db.session import dispose_engine
 from app.errors import register_error_handlers
@@ -33,6 +33,8 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(projects.router)
     app.include_router(transcriptions.router)
+    app.include_router(screenshots.router)
+    app.include_router(exports.router)
     # Keep last: the SPA catch-all must come after every API router.
     mount_spa(app, settings.static_dir)
     return app

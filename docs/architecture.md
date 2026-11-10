@@ -94,6 +94,8 @@ erDiagram
 
 - `ON DELETE CASCADE` from project to transcripts and screenshots, and `ON DELETE SET NULL` from transcript to screenshot.
 - List endpoints never select `screenshot.data` (they load metadata only).
+- Screenshot uploads are read in 64 KiB chunks up to `MAX_IMAGE_MB` and typed by magic bytes (`app/services/images.py`). `.md`/`.txt` rendering is a pure function (`app/services/transcript_format.py`) shared by downloads and the export, so both produce identical bytes.
+- The ZIP export (`app/services/export.py`) plans every path first (pure, unit-tested), then writes into a `SpooledTemporaryFile` (memory up to 16 MiB, then an anonymous temp file), loading one image at a time, and streams it. The file is closed (discarded) when the stream ends; nothing is persisted.
 
 ## Frontend (`frontend/`)
 

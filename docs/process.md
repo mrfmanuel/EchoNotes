@@ -89,7 +89,7 @@ Merge gate (all required):
 An issue is done when all of these hold:
 - every acceptance criterion is checked and has evidence (test or QA note)
 - tests are written with the code and the whole suite passes locally and in CI
-- lint and type checks are clean (ruff, ESLint, `tsc`)
+- lint and type checks are clean (ruff, oxlint, `tsc`)
 - docs, `openapi.yaml` and `.env.example` are updated when affected
 - there are no secrets and no customer data in code, logs or telemetry
 - it is merged to `main` and the issue is closed with evidence

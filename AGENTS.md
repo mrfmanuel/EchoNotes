@@ -26,7 +26,7 @@ Subagent definitions are in [`.claude/agents/`](.claude/agents/).
 ## Stack
 
 - **Backend:** Python 3.12, FastAPI, SQLAlchemy 2 + Alembic (from M2), Postgres; managed with **uv**; tested with pytest; linted and formatted with ruff
-- **Frontend:** React 18 + TypeScript + Vite; tested with Vitest + Testing Library; linted with ESLint
+- **Frontend:** React 19 + TypeScript (strict) + Vite; tested with Vitest + Testing Library (jsdom); linted with oxlint
 - **Infra:** Docker / docker compose (M2), GitHub Actions CI, Render dev + prod (M3), OpenTelemetry (M4)
 
 ## Repo layout

@@ -45,6 +45,16 @@ class TranscriptSummary(BaseModel):
     updated_at: datetime
 
 
+class Transcript(TranscriptSummary):
+    text: str
+    source_filename: str | None
+
+
+class Error(BaseModel):
+    detail: str
+    code: str
+
+
 class Screenshot(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID

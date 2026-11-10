@@ -69,8 +69,11 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
 
 ENTRYPOINT ["docker-entrypoint"]
 
-# Traceability: every image is labelled with the commit it was built from.
+# Traceability: every image is labelled with the commit it was built from, and the app reports
+# it in GET /api/health (`commit`, US-17 AC3). On Render the build arg is not passed; Render's
+# runtime RENDER_GIT_COMMIT wins over GIT_SHA. Kept last so a new SHA only rebuilds these layers.
 ARG GIT_SHA=unknown
+ENV GIT_SHA=${GIT_SHA}
 LABEL org.opencontainers.image.title="echonotes" \
       org.opencontainers.image.source="https://github.com/mrfmanuel/EchoNotes" \
       org.opencontainers.image.revision="${GIT_SHA}"

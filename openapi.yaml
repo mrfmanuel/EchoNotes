@@ -1,0 +1,502 @@
+openapi: 3.1.0
+info:
+  title: EchoNotes API
+  version: 0.1.0
+  summary: Turn audio into organized text notes.
+  description: |
+    Contract between the EchoNotes React frontend and the FastAPI backend.
+    See docs/product-spec.md for the user stories (US-xx) each operation implements.
+
+    Privacy: raw audio is never persisted; transcript text and file contents are never logged.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: http://localhost:8000
+    description: Local (docker compose / uvicorn)
+tags:
+  - name: health
+  - name: projects
+  - name: transcriptions
+  - name: screenshots
+  - name: exports
+
+paths:
+  /api/health:
+    get:
+      tags: [health]
+      operationId: getHealth
+      summary: Liveness and database check (US-17)
+      responses:
+        "200":
+          description: Service healthy
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+        "503":
+          description: Database unreachable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+
+  /api/projects:
+    get:
+      tags: [projects]
+      operationId: listProjects
+      summary: List projects, newest update first (US-02)
+      responses:
+        "200":
+          description: Projects
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Project" }
+    post:
+      tags: [projects]
+      operationId: createProject
+      summary: Create a project (US-01)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProjectCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/projects/{projectId}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [projects]
+      operationId: getProject
+      summary: Get a project with its transcripts (summaries) and screenshots (metadata)
+      responses:
+        "200":
+          description: Project detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [projects]
+      operationId: renameProject
+      summary: Rename a project (US-03). Slug is kept.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProjectUpdate" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [projects]
+      operationId: deleteProject
+      summary: Delete a project and everything in it (US-04)
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/projects/{projectId}/transcriptions:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [transcriptions]
+      operationId: listTranscriptions
+      summary: List transcripts of a project (newest first)
+      responses:
+        "200":
+          description: Transcripts (without full text)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/TranscriptSummary" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [transcriptions]
+      operationId: createTranscription
+      summary: Upload or recorded audio → transcript (US-05, US-06, US-07)
+      description: |
+        Synchronous: the request returns once the provider has finished.
+        Accepted: mp3, wav, m4a, ogg, webm; max 25 MB. Audio is discarded after the call.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  contentMediaType: application/octet-stream
+                  description: Audio file
+                language:
+                  $ref: "#/components/schemas/LanguageHint"
+                title:
+                  type: string
+                  maxLength: 200
+                  description: Optional; defaults to the filename without extension
+      responses:
+        "201":
+          description: Transcript created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Transcript" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMedia" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "502":
+          description: Transcription provider error
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "504":
+          description: Transcription provider timeout
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/transcriptions/{transcriptId}:
+    parameters:
+      - $ref: "#/components/parameters/TranscriptId"
+    get:
+      tags: [transcriptions]
+      operationId: getTranscription
+      summary: Get a transcript with full text (US-08)
+      responses:
+        "200":
+          description: Transcript
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Transcript" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [transcriptions]
+      operationId: updateTranscription
+      summary: Edit title and/or text (US-08)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TranscriptUpdate" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Transcript" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [transcriptions]
+      operationId: deleteTranscription
+      summary: Delete a transcript; linked screenshots are unlinked (US-11)
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/transcriptions/{transcriptId}/download:
+    parameters:
+      - $ref: "#/components/parameters/TranscriptId"
+      - name: format
+        in: query
+        required: true
+        schema:
+          type: string
+          enum: [md, txt]
+    get:
+      tags: [transcriptions]
+      operationId: downloadTranscription
+      summary: Download as .md or .txt (US-10)
+      responses:
+        "200":
+          description: File attachment
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+              description: attachment; filename="<transcript-slug>.<format>"
+          content:
+            text/markdown:
+              schema: { type: string }
+            text/plain:
+              schema: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/projects/{projectId}/screenshots:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [screenshots]
+      operationId: listScreenshots
+      summary: List screenshot metadata of a project (US-15)
+      responses:
+        "200":
+          description: Screenshots
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Screenshot" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [screenshots]
+      operationId: uploadScreenshot
+      summary: Attach an image via picker or clipboard paste (US-12, US-13, US-14)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  contentMediaType: application/octet-stream
+                  description: png, jpeg or webp; max 5 MB (validated by magic bytes)
+                transcript_id:
+                  type: string
+                  format: uuid
+                  description: Optional link to a transcript of the same project
+      responses:
+        "201":
+          description: Stored
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Screenshot" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMedia" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/screenshots/{screenshotId}:
+    parameters:
+      - $ref: "#/components/parameters/ScreenshotId"
+    patch:
+      tags: [screenshots]
+      operationId: updateScreenshot
+      summary: Link/unlink a screenshot to a transcript (US-14)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                transcript_id:
+                  type: [string, "null"]
+                  format: uuid
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Screenshot" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [screenshots]
+      operationId: deleteScreenshot
+      summary: Delete a screenshot (US-15)
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/screenshots/{screenshotId}/image:
+    parameters:
+      - $ref: "#/components/parameters/ScreenshotId"
+    get:
+      tags: [screenshots]
+      operationId: getScreenshotImage
+      summary: Raw image bytes (used for thumbnails and full view)
+      responses:
+        "200":
+          description: Image
+          headers:
+            Cache-Control:
+              schema: { type: string }
+          content:
+            image/png: {}
+            image/jpeg: {}
+            image/webp: {}
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/projects/{projectId}/export:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [exports]
+      operationId: exportProject
+      summary: Download the whole project as a ZIP (US-16)
+      responses:
+        "200":
+          description: ZIP with <slug>/README.md, transcripts/, screenshots/
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+              description: attachment; filename="<project-slug>.zip"
+          content:
+            application/zip:
+              schema:
+                type: string
+                contentMediaType: application/zip
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  parameters:
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    TranscriptId:
+      name: transcriptId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ScreenshotId:
+      name: screenshotId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ValidationError:
+      description: Invalid input
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TooLarge:
+      description: File exceeds the size limit
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    UnsupportedMedia:
+      description: File type not allowed
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Health:
+      type: object
+      required: [status, version, database]
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        version: { type: string, examples: ["0.1.0"] }
+        database: { type: string, enum: [ok, error, skipped] }
+
+    Error:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          description: Human-readable message (FastAPI style); list of field errors for 422
+          oneOf:
+            - type: string
+            - type: array
+              items: { type: object }
+        code:
+          type: string
+          description: Machine-readable code, e.g. audio_too_large, unsupported_media_type, provider_error, provider_timeout
+
+    LanguageHint:
+      type: string
+      enum: [auto, en, es, pt]
+      default: auto
+
+    ProjectCreate:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+    ProjectUpdate:
+      $ref: "#/components/schemas/ProjectCreate"
+
+    Project:
+      type: object
+      required: [id, name, slug, transcript_count, screenshot_count, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string, pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }
+        transcript_count: { type: integer, minimum: 0 }
+        screenshot_count: { type: integer, minimum: 0 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ProjectDetail:
+      allOf:
+        - $ref: "#/components/schemas/Project"
+        - type: object
+          required: [transcripts, screenshots]
+          properties:
+            transcripts:
+              type: array
+              items: { $ref: "#/components/schemas/TranscriptSummary" }
+            screenshots:
+              type: array
+              items: { $ref: "#/components/schemas/Screenshot" }
+
+    TranscriptSummary:
+      type: object
+      required: [id, project_id, title, slug, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        title: { type: string }
+        slug: { type: string }
+        language: { type: [string, "null"], examples: ["es"] }
+        duration_seconds: { type: [number, "null"], minimum: 0 }
+        provider: { type: string, enum: [groq, fake] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Transcript:
+      allOf:
+        - $ref: "#/components/schemas/TranscriptSummary"
+        - type: object
+          required: [text]
+          properties:
+            text: { type: string }
+            source_filename: { type: [string, "null"] }
+
+    TranscriptUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        text: { type: string }
+
+    Screenshot:
+      type: object
+      required: [id, project_id, filename, content_type, size_bytes, image_url, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        transcript_id: { type: [string, "null"], format: uuid }
+        filename: { type: string }
+        content_type: { type: string, enum: [image/png, image/jpeg, image/webp] }
+        size_bytes: { type: integer, minimum: 1, maximum: 5242880 }
+        image_url: { type: string, examples: ["/api/screenshots/0f8c.../image"] }
+        created_at: { type: string, format: date-time }

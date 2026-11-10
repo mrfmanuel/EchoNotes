@@ -118,12 +118,13 @@ async def list_transcript_summaries(
 
 
 async def get_project_contents(session: AsyncSession, project_id: uuid.UUID) -> ProjectContents:
-    """Transcript summaries (no `text`) and screenshot metadata (no image bytes), newest first."""
+    """Transcript summaries (no `text`), newest first, and screenshot metadata (no image
+    bytes), oldest first: the same order as `GET /api/projects/{id}/screenshots` (#14 AC5)."""
     transcripts = await list_transcript_summaries(session, project_id)
     screenshots = await session.scalars(
         select(Screenshot)
         .where(Screenshot.project_id == project_id)
-        .order_by(Screenshot.created_at.desc(), Screenshot.id.desc())
+        .order_by(Screenshot.created_at.asc(), Screenshot.id.asc())
     )
     return ProjectContents(transcripts, list(screenshots.all()))
 

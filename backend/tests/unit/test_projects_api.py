@@ -320,8 +320,8 @@ async def test_get_project_lists_screenshot_metadata_with_image_url_and_no_bytes
 
     body = (await client.get(f"/api/projects/{project_id}")).json()
 
-    assert [s["id"] for s in body["screenshots"]] == [str(new.id), str(old.id)]
-    shot = body["screenshots"][1]
+    assert [s["id"] for s in body["screenshots"]] == [str(old.id), str(new.id)]
+    shot = body["screenshots"][0]
     assert set(shot) == {
         "id",
         "project_id",
@@ -335,7 +335,24 @@ async def test_get_project_lists_screenshot_metadata_with_image_url_and_no_bytes
     assert shot["image_url"] == f"/api/screenshots/{old.id}/image"
     assert shot["transcript_id"] == str(transcript.id)
     assert (shot["content_type"], shot["size_bytes"]) == ("image/png", old.size_bytes)
-    assert body["screenshots"][0]["transcript_id"] is None
+    assert body["screenshots"][1]["transcript_id"] is None
+
+
+async def test_get_project_embeds_screenshots_oldest_first_like_the_screenshots_list(
+    client: httpx2.AsyncClient, session: AsyncSession
+) -> None:
+    created = await _create(client, "Ordered")
+    project_id = uuid.UUID(created["id"])
+    middle = await add_screenshot(session, project_id, created_at=at(5))
+    newest = await add_screenshot(session, project_id, created_at=at(9))
+    oldest = await add_screenshot(session, project_id, created_at=at(1))
+
+    detail = (await client.get(f"/api/projects/{project_id}")).json()
+    listed = (await client.get(f"/api/projects/{project_id}/screenshots")).json()
+
+    expected = [str(oldest.id), str(middle.id), str(newest.id)]
+    assert [s["id"] for s in detail["screenshots"]] == expected
+    assert [s["id"] for s in listed] == expected
 
 
 async def test_get_project_contents_does_not_load_screenshot_bytes_or_transcript_text(

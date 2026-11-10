@@ -4,6 +4,7 @@ import { useApi } from '../api/context'
 import { genericErrorMessage } from '../api/errors'
 import type { ProjectDetail, TranscriptSummary } from '../api/types'
 import { ProjectHeader } from '../components/ProjectHeader'
+import { ScreenshotGallery } from '../components/ScreenshotGallery'
 import { LoadError, Loading, NotFound } from '../components/StatusViews'
 import { UploadForm } from '../components/UploadForm'
 import { formatDate, formatDuration, formatLanguage, pluralize } from '../lib/format'
@@ -34,7 +35,7 @@ function TranscriptList({ transcripts }: { transcripts: TranscriptSummary[] }) {
   )
 }
 
-/** A single project: rename/delete, upload or record audio, transcripts list. */
+/** A single project: rename/delete, audio upload/record, transcripts, screenshots, export. */
 export function ProjectPage() {
   const { projectId = '' } = useParams()
   const api = useApi()
@@ -77,16 +78,35 @@ export function ProjectPage() {
         <TranscriptList transcripts={project.transcripts} />
       </section>
 
-      {/*
-        ===== PR-G PLACEHOLDER (#20 / #21): screenshot gallery, Ctrl+V paste handler and the
-        "Export ZIP" button (api.projectExportUrl) go in this section. Keep the section id. =====
-      */}
       <section id="project-screenshots" aria-labelledby="screenshots-heading">
-        <h2 id="screenshots-heading">Screenshots</h2>
-        <p className="hint">
-          {pluralize(project.screenshots.length, 'screenshot')} in this project. The gallery and
-          ZIP export are coming soon.
-        </p>
+        <h2 id="screenshots-heading">
+          Screenshots <span className="count">({project.screenshots.length})</span>
+        </h2>
+        <ScreenshotGallery
+          projectId={project.id}
+          screenshots={project.screenshots}
+          transcripts={project.transcripts}
+          onChange={(screenshots) =>
+            setData({ ...project, screenshots, screenshot_count: screenshots.length })
+          }
+        />
+      </section>
+
+      <section className="card export-bar" aria-labelledby="export-heading">
+        <div>
+          <h2 id="export-heading">Export</h2>
+          <p className="hint">
+            Download {pluralize(project.transcripts.length, 'transcript')} and{' '}
+            {pluralize(project.screenshots.length, 'screenshot')} as one ZIP with a README index.
+          </p>
+        </div>
+        <a
+          className="btn btn-primary"
+          href={api.projectExportUrl(project.id)}
+          download={`${project.slug}.zip`}
+        >
+          Export ZIP
+        </a>
       </section>
     </div>
   )

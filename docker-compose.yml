@@ -1,0 +1,47 @@
+# Whole system with one command (#22): `docker compose up --build` -> http://localhost:8000
+# Works on a fresh clone WITHOUT .env (fake transcriber, local Postgres credentials).
+# `.env` is optional: it can switch TRANSCRIBER_PROVIDER=groq and set GROQ_API_KEY.
+# Data lives in the named volume `pgdata`: kept by `docker compose down`, wiped by `down -v`.
+name: echonotes
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-echonotes}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-echonotes}
+      POSTGRES_DB: ${POSTGRES_DB:-echonotes}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # No host port: only the app talks to the database (avoids clashes with a local Postgres).
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: echonotes:local
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    # `environment` wins over `env_file`, so a localhost DATABASE_URL or an empty STATIC_DIR
+    # in .env (meant for running uvicorn on the host) cannot break the container.
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-echonotes}:${POSTGRES_PASSWORD:-echonotes}@db:5432/${POSTGRES_DB:-echonotes}
+      STATIC_DIR: /app/static
+      PORT: "8000"
+      TRANSCRIBER_PROVIDER: ${TRANSCRIBER_PROVIDER:-fake}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+
+volumes:
+  pgdata:

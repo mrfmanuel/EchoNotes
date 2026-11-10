@@ -1,6 +1,7 @@
 """Application settings read from environment variables (see `.env.example`)."""
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, SecretStr, field_validator
@@ -40,11 +41,18 @@ class Settings(BaseSettings):
     transcribe_timeout_seconds: float = Field(default=120, gt=0)
     max_audio_mb: int = Field(default=25, gt=0)
     max_image_mb: int = Field(default=5, gt=0)
+    # Built SPA (frontend/dist) served by FastAPI. Unset/empty = API only (dev, tests).
+    static_dir: Path | None = None
 
     @field_validator("log_level", mode="before")
     @classmethod
     def _upper_log_level(cls, value: object) -> object:
         return value.upper() if isinstance(value, str) else value
+
+    @field_validator("static_dir", mode="before")
+    @classmethod
+    def _empty_static_dir_is_none(cls, value: object) -> object:
+        return None if isinstance(value, str) and not value.strip() else value
 
     @field_validator("database_url", mode="before")
     @classmethod

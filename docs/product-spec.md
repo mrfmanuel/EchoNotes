@@ -97,7 +97,9 @@ Each criterion uses Given/When/Then. "Project page" means the screen of a single
 #### US-10 — Download a transcript as `.md` or `.txt`
 - **AC1** When I click **Download .md**, then I get `<transcript-slug>.md` containing a `# <title>` heading, a metadata line (date, language, duration), a blank line and the text.
 - **AC2** When I click **Download .txt**, then I get `<transcript-slug>.txt` with the plain text only.
-- **AC3** Downloads are served by the API with a correct `Content-Type` and `Content-Disposition: attachment`.
+- **AC3** Downloads are served by the API with a correct `Content-Type` (`text/markdown; charset=utf-8` / `text/plain; charset=utf-8`) and `Content-Disposition: attachment`.
+- **AC4** The `.md` metadata line is exactly `Date: YYYY-MM-DD · Language: <code|unknown> · Duration: m:ss|unknown`. *(Decision 2026-11-10, grooming #13.)*
+- **AC5** Transcript slugs are derived from the title, are **not** unique, and are recomputed when the title changes. Duplicate slugs only get a numeric suffix inside an export (US-16 AC2). *(Decision 2026-11-10.)*
 
 <a id="us-11"></a>
 #### US-11 — Delete a transcript
@@ -119,7 +121,7 @@ Each criterion uses Given/When/Then. "Project page" means the screen of a single
 <a id="us-14"></a>
 #### US-14 — Link a screenshot to a transcript
 - **AC1** When uploading or afterwards, I can optionally link a screenshot to one transcript of the same project.
-- **AC2** Linking to a transcript of another project returns `422`.
+- **AC2** Linking to a transcript of another project, or to a transcript ID that does not exist, returns `422`. *(Unknown ID added 2026-11-10, grooming #14.)*
 - **AC3** In the transcript view, I see the screenshots linked to it.
 
 <a id="us-15"></a>
@@ -144,6 +146,12 @@ Each criterion uses Given/When/Then. "Project page" means the screen of a single
 - **AC2** Transcript files use the same formats as US-10. Duplicate slugs get a numeric suffix.
 - **AC3** Given an empty project, then the ZIP still contains `README.md` stating that the project is empty.
 - **AC4** The export is built in memory or a temp file and streamed. It is never persisted.
+
+### 3.4.1 Conventions decided while grooming M2 (2026-11-10)
+
+- **Size units:** "MB" means 1024² bytes (25 MB = 26 214 400 bytes, 5 MB = 5 242 880 bytes).
+- **Error codes** (`code` field of the `Error` body): `not_found`, `validation_error`, `unsupported_media_type`, `audio_too_large`, `image_too_large`, `provider_error`, `provider_timeout`. Request-validation `422`s keep FastAPI's `detail` list.
+- **Request ID:** every response carries an `X-Request-ID` header (the incoming value is echoed, or a UUID4 is generated). See [observability.md](observability.md).
 
 ### 3.5 Operations
 

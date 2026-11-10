@@ -60,6 +60,8 @@ The main session invokes subagents by name with Claude Code's Agent tool, always
 
 Independent issues may be dispatched in parallel (for example, backend and frontend stories in separate branches). Issues that depend on each other are dispatched in sequence.
 
+> **Note on registration:** Claude Code loads `.claude/agents/*.md` when a session starts. In the session that *created* these files (P1), the definitions were not registered yet. The tech lead therefore dispatched a general-purpose subagent that was told to read and fully adopt the role file (for example `qa-engineer.md`). From P2 on, the agents are invoked directly by name.
+
 ## Hand-off contracts
 
 | From → To | Artifact | Must contain |

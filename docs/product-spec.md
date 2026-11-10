@@ -44,6 +44,7 @@ Each criterion uses Given/When/Then. "Project page" means the screen of a single
 *As a user, I want to see all my projects so that I can open one.*
 
 - **AC1** Given projects exist, when I open the home page, then I see them sorted by last update (newest first), each with its name, number of transcripts and number of screenshots.
+- **AC3** "Last update" means the project's `updated_at`. It changes on rename (US-03) **and** whenever a transcript or screenshot in the project is created, edited or deleted, so the most recently used project is listed first. *(Decision 2026-11-10, raised by the PM while grooming #10.)*
 - **AC2** Given no projects exist, then I see an empty state that invites me to create one.
 
 <a id="us-03"></a>

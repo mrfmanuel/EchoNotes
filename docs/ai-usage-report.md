@@ -31,12 +31,15 @@ How AI tools were used to build EchoNotes, what the agents did, and what a human
 - Committed docs directly to `main` (allowed for docs-only work) with `Refs #N`.
 
 ### What the agents did
-- The skeleton (issue #7) followed the full workflow: branch `feat/7-skeleton-ci` → PR with `Closes #7` → CI → **`qa-engineer` subagent** independently verified the PR against the acceptance criteria and posted a QA report → squash-merge. Links are added below when the PR exists.
-- M1 issues were closed with evidence comments (files and commit SHAs).
+- **software-engineer role (played by the tech lead session):** implemented issue #7 on branch `feat/7-skeleton-ci` and opened [PR #34](https://github.com/mrfmanuel/EchoNotes/pull/34) with `Closes #7`. The first CI run failed (`astral-sh/setup-uv@v10` has no floating major tag). It was fixed by pinning `v10.3.3`, and the next run was green.
+- **`qa-engineer` subagent:** checked out the PR, ran the full backend and frontend suites (1 + 2 tests, lint, typecheck, build), started uvicorn and curled `/api/health`, checked secrets, `.env` tracking and CI caching, judged that oxlint instead of ESLint is acceptable, and posted an **APPROVED** [QA report](https://github.com/mrfmanuel/EchoNotes/pull/34#issuecomment-6770791245). The tech lead then squash-merged (`83ceab2`), and CI on `main` was green.
+- **`product-manager` subagent:** groomed the first M2 issues (#9, #10, #11) against the spec, the architecture and `openapi.yaml`. It tightened the acceptance criteria (exact settings variables, slug rules, status/error codes, deterministic fake-provider output, Groq error mapping, test-isolation hooks), recorded dependencies, and commented *"Groomed — ready for software-engineer."* on each issue. It raised one product question (does adding content refresh a project's `updated_at`?), which the tech lead decided and recorded in [US-02 AC3](product-spec.md#us-02).
+- All M1 issues were closed with evidence comments (files, commit SHAs, PR and QA links).
+- **Caveat:** the subagent files were created during this session, so Claude Code had not registered them by name yet. The QA and PM runs were general-purpose subagents instructed to read and adopt their role file (see [agent-team.md](agent-team.md)).
 
 ### What a human verified
-- Approved the plan and the prompt. Checks the spec and the tracker after P1 (a Cowork review).
-- *To confirm by the human after P1:* the README renders correctly, the Project board is public, and CI is green.
+- Ran the P0 prerequisite fixes, approved the plan and wrote the prompt.
+- **To do after P1:** review the spec and the tracker (Cowork review), check that the README renders, the [Project board](https://github.com/users/mrfmanuel/projects/2) is public and the CI badge is green.
 
 ## P2 — Build the app *(planned)*
 ## P3 — Deploy and CI/CD *(planned)*

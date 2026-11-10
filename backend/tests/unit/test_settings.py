@@ -21,7 +21,11 @@ BACKEND_KEYS = {
     "MAX_AUDIO_MB",
     "MAX_IMAGE_MB",
     "STATIC_DIR",
+    "RENDER_GIT_COMMIT",
+    "GIT_SHA",
 }
+# Set by the platform (Render) at runtime: documented in .env.example as a comment, not a value.
+PLATFORM_KEYS = {"RENDER_GIT_COMMIT"}
 
 
 def _env_example_values() -> dict[str, str]:
@@ -34,7 +38,8 @@ def _env_example_values() -> dict[str, str]:
 
 
 def test_env_example_lists_every_backend_setting() -> None:
-    assert _env_example_values().keys() >= BACKEND_KEYS
+    assert _env_example_values().keys() >= BACKEND_KEYS - PLATFORM_KEYS
+    assert all(key in ENV_EXAMPLE.read_text(encoding="utf-8") for key in PLATFORM_KEYS)
     assert {name.upper() for name in Settings.model_fields} == BACKEND_KEYS
 
 

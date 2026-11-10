@@ -26,6 +26,8 @@ BACKEND_ENV_VARS = (
     "MAX_AUDIO_MB",
     "MAX_IMAGE_MB",
     "STATIC_DIR",
+    "RENDER_GIT_COMMIT",
+    "GIT_SHA",
 )
 
 

@@ -12,5 +12,11 @@ async def test_health_returns_database_ok_against_postgres(pg_client: httpx2.Asy
     response = await pg_client.get("/api/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "version": __version__, "database": "ok"}
+    assert response.json() == {
+        "status": "ok",
+        "version": __version__,
+        "database": "ok",
+        "commit": "unknown",
+        "environment": "local",
+    }
     assert response.headers["X-Request-ID"]

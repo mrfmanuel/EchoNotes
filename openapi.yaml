@@ -333,6 +333,7 @@ paths:
           headers:
             Cache-Control:
               schema: { type: string }
+              description: private, max-age=31536000, immutable
           content:
             image/png: {}
             image/jpeg: {}

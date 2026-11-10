@@ -7,6 +7,7 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from app.db.models import PROJECT_NAME_MAX
+from app.db.models import Screenshot as ScreenshotRow
 
 ProjectName = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=PROJECT_NAME_MAX)
@@ -66,6 +67,12 @@ class Screenshot(BaseModel):
     created_at: datetime
 
 
+class ScreenshotUpdate(BaseModel):
+    """PATCH body: a transcript ID links the screenshot, `null` unlinks it (US-14)."""
+
+    transcript_id: uuid.UUID | None = None
+
+
 class ProjectDetail(Project):
     transcripts: list[TranscriptSummary]
     screenshots: list[Screenshot]
@@ -73,3 +80,17 @@ class ProjectDetail(Project):
 
 def screenshot_image_url(screenshot_id: uuid.UUID) -> str:
     return f"/api/screenshots/{screenshot_id}/image"
+
+
+def to_screenshot(screenshot: ScreenshotRow) -> Screenshot:
+    """Response model for a screenshot row (metadata only, never the bytes)."""
+    return Screenshot(
+        id=screenshot.id,
+        project_id=screenshot.project_id,
+        transcript_id=screenshot.transcript_id,
+        filename=screenshot.filename,
+        content_type=screenshot.content_type,
+        size_bytes=screenshot.size_bytes,
+        image_url=screenshot_image_url(screenshot.id),
+        created_at=screenshot.created_at,
+    )

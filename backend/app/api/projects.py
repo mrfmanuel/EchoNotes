@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, Path, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import schemas
-from app.db.models import Screenshot
 from app.db.session import get_session
 from app.services import projects as service
 
@@ -28,19 +27,6 @@ def _to_project(item: service.ProjectWithCounts) -> schemas.Project:
         screenshot_count=item.screenshot_count,
         created_at=project.created_at,
         updated_at=project.updated_at,
-    )
-
-
-def _to_screenshot(screenshot: Screenshot) -> schemas.Screenshot:
-    return schemas.Screenshot(
-        id=screenshot.id,
-        project_id=screenshot.project_id,
-        transcript_id=screenshot.transcript_id,
-        filename=screenshot.filename,
-        content_type=screenshot.content_type,
-        size_bytes=screenshot.size_bytes,
-        image_url=schemas.screenshot_image_url(screenshot.id),
-        created_at=screenshot.created_at,
     )
 
 
@@ -71,7 +57,7 @@ async def get_project(project_id: ProjectIdPath, session: SessionDep) -> schemas
     return schemas.ProjectDetail(
         **_to_project(item).model_dump(),
         transcripts=[schemas.TranscriptSummary.model_validate(t) for t in contents.transcripts],
-        screenshots=[_to_screenshot(s) for s in contents.screenshots],
+        screenshots=[schemas.to_screenshot(s) for s in contents.screenshots],
     )
 
 

@@ -1,4 +1,4 @@
-"""`GET /api/health` (US-17): liveness plus a bounded database check."""
+"""`GET /api/health` (US-17): liveness, a bounded database check and the deployed commit."""
 
 import asyncio
 import logging
@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import __version__
+from app.config import get_settings
 from app.db.session import get_session
 
 DB_CHECK_TIMEOUT_SECONDS = 2.0
@@ -22,6 +23,8 @@ class Health(BaseModel):
     status: Literal["ok", "degraded"]
     version: str
     database: Literal["ok", "error", "skipped"]
+    commit: str
+    environment: Literal["local", "dev", "prod"]
 
 
 async def database_is_reachable(session: AsyncSession) -> bool:
@@ -44,7 +47,14 @@ async def database_is_reachable(session: AsyncSession) -> bool:
 async def health(
     response: Response, session: Annotated[AsyncSession, Depends(get_session)]
 ) -> Health:
-    if await database_is_reachable(session):
-        return Health(status="ok", version=__version__, database="ok")
-    response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-    return Health(status="degraded", version=__version__, database="error")
+    database_ok = await database_is_reachable(session)
+    if not database_ok:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    settings = get_settings()
+    return Health(
+        status="ok" if database_ok else "degraded",
+        version=__version__,
+        database="ok" if database_ok else "error",
+        commit=settings.deployed_commit,
+        environment=settings.app_env,
+    )

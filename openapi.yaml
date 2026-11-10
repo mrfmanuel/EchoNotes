@@ -404,11 +404,21 @@ components:
   schemas:
     Health:
       type: object
-      required: [status, version, database]
+      required: [status, version, database, commit, environment]
       properties:
         status: { type: string, enum: [ok, degraded] }
         version: { type: string, examples: ["0.1.0"] }
         database: { type: string, enum: [ok, error, skipped] }
+        commit:
+          type: string
+          description: >-
+            Deployed git SHA: RENDER_GIT_COMMIT if set, else the GIT_SHA build arg,
+            else "unknown". Deploy workflows poll it to verify which commit is running.
+          examples: ["a1b2c3d4e5f60718293a4b5c6d7e8f9012345678", "unknown"]
+        environment:
+          type: string
+          enum: [local, dev, prod]
+          description: APP_ENV of the running instance (local when unset)
 
     Error:
       type: object

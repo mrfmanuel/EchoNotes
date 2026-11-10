@@ -4,13 +4,13 @@
 
 ## Test pyramid
 
-Counts as of PR-I (#23/#41). `pytest --collect-only -q` and `npx vitest run` print the current numbers.
+Counts as of #47. `pytest --collect-only -q` and `npx vitest run` print the current numbers.
 
 | Level | Tests | Tooling | What it covers | Runs in |
 |---|---:|---|---|---|
-| Backend unit | 387 | `pytest`, AnyIO, in-memory SQLite (`aiosqlite`), `httpx2.ASGITransport`, fake/stub transcribers | Settings, slugs, upload and image validation, transcript formatting, export plan, every API endpoint (happy path + 4xx/5xx shapes), request IDs and JSON logs, Groq client with a mocked HTTP layer, SPA serving, event loop selection (#41), Alembic CLI logs as JSON (#41), **contract test** (`openapi.yaml` ↔ FastAPI) | every PR (`backend` job), `make test`, `make test-unit` |
+| Backend unit | 408 | `pytest`, AnyIO, in-memory SQLite (`aiosqlite`), `httpx2.ASGITransport`, fake/stub transcribers | Settings, slugs, upload and image validation, transcript formatting, export plan, every API endpoint (happy path + 4xx/5xx shapes), request IDs and JSON logs, Groq client with a mocked HTTP layer, SPA serving, event loop selection (#41), Alembic CLI logs as JSON (#41), **contract test** (`openapi.yaml` ↔ FastAPI) | every PR (`backend` job), `make test`, `make test-unit` |
 | Backend integration | 38 | `pytest -m integration`, real Postgres 16, Alembic migrations, `httpx2.ASGITransport` | Migrations (empty DB → head, downgrade/upgrade round trip, models == migrations), cascades and `SET NULL` on Postgres, every API flow with persistence (bytea, `timestamptz`, unique slugs), export ZIP tree, **full flow** and **privacy** test | every PR (`backend` job with a `postgres:16` service), `make test` |
-| Frontend component | 129 | Vitest + Testing Library + jsdom, mocked API client | Pages and components: projects, upload/record, transcript editor (copy, download, unsaved changes), screenshots (picker, Ctrl+V paste, link, gallery), export, API client errors | every PR (`frontend` job), `make test`, `make test-unit` |
+| Frontend component | 136 | Vitest + Testing Library + jsdom, mocked API client | Pages and components: projects, upload/record, transcript editor (copy, download, unsaved changes), screenshots (picker, Ctrl+V paste, link, gallery), export, API client errors, build-info footer | every PR (`frontend` job), `make test`, `make test-unit` |
 | End-to-end smoke | 1 script (8 steps) | `scripts/smoke.sh` (bash + curl + Python 3) against a running stack | Key journey: health → SPA → create project → upload audio → transcript → screenshot → export ZIP → delete | every PR (CI `docker` job, compose stack); after every deploy (M3) |
 
 ### Backend suites in detail
@@ -21,7 +21,7 @@ Counts as of PR-I (#23/#41). `pytest --collect-only -q` and `npx vitest run` pri
 | `integration/test_migrations.py` | 3 | `alembic upgrade head` on a brand-new empty schema (tables created, autogenerate diff empty, JSON migration logs without the URL); `downgrade base` → `upgrade head`; migrated schema == models |
 | `integration/test_cascade_pg.py`, `test_screenshots_export_pg.py` | 11 | `ON DELETE CASCADE` (project → transcripts, screenshots), `SET NULL` (transcript → screenshot link), bytea round trip at 5 MiB, export tree on Postgres |
 | `integration/test_projects_pg.py`, `test_transcriptions_pg.py`, `test_transcripts_manage_pg.py`, `test_health_pg.py` | 22 | Endpoint behavior on Postgres: slugs, ordering, `updated_at` bumps, provider errors store nothing, health `database: ok` |
-| `unit/test_contract.py` | 5 | Same `(path, method)` set in `openapi.yaml` and `app.openapi()` (only `/api/*`; path params normalized), same `operationId`s, same success codes, every documented error code is declared |
+| `unit/test_contract.py` | 10 | Same `(path, method)` set in `openapi.yaml` and `app.openapi()` (only `/api/*`; path params normalized), same `operationId`s, same success codes, every documented error code is declared, `/api/health` body validates against the `Health` schema |
 | `unit/test_event_loop.py`, `unit/test_migration_logs.py`, `unit/test_logging.py` | 16 | #41: selector loop on Windows (monkeypatched `sys.platform`, passes on Linux), `--loop app.event_loop:new_event_loop` resolves, Proactor warning; Alembic CLI logs are JSON; no `color_message`/ANSI in logs |
 
 ### Intentional differences between `openapi.yaml` and the FastAPI schema
@@ -64,14 +64,14 @@ make smoke SMOKE_URL=https://<dev-or-prod-url> # post-deploy check (M3)
 
 - **Needs:** bash, `curl` and Python 3 (`python3`, or `python` when `python3` is missing or is the Windows Store stub). Works on Linux CI and Git Bash on Windows. No binary fixtures: the script generates a 1 s silent WAV and a 4x4 PNG in a `mktemp -d` directory that a `trap` removes on exit.
 - **Steps** (one `PASS`/`FAIL` line each, with HTTP status and timing; exits non-zero at the first failure, `2` without an argument):
-  1. `GET /api/health` → 200 and `database: ok`, retried every 3 s until `SMOKE_HEALTH_TIMEOUT` (cold starts).
+  1. `GET /api/health` → 200 and `database: ok`, retried every 3 s until `SMOKE_HEALTH_TIMEOUT` (cold starts). `commit` and `environment` must be non-empty; the line prints the 7-char commit and the environment. With `SMOKE_EXPECT_COMMIT` set, a different `commit` fails the run (deploy verification, #47).
   2. `GET /` and a client route → 200 `index.html`; `GET /api/<unknown>` → 404.
-  3. `POST /api/projects` with a unique name `smoke-<UTC timestamp>-<pid>` → 201.
+  3. `POST /api/projects` with a unique, clearly identifiable name `smoke-test-<UTC timestamp>-<pid>` → 201.
   4. `POST /api/projects/{id}/transcriptions` with the WAV → 201 (prints provider and duration only).
   5. `GET /api/transcriptions/{id}` → 200; `text` must be non-empty (prints its length only).
   6. `POST /api/projects/{id}/screenshots` with the PNG and `transcript_id` → 201, linked.
   7. `GET /api/projects/{id}/export` → 200 `application/zip`; Python `zipfile.testzip()` passes and the tree has `<slug>/README.md`, `<slug>/transcripts/*.md`, `<slug>/transcripts/*.txt` and `<slug>/screenshots/01-*.png`.
-  8. `DELETE /api/projects/{id}` → 204. If an earlier step fails, the `EXIT` trap still deletes the project, so dev/prod stay clean.
+  8. `DELETE /api/projects/{id}` → 204. If an earlier step fails (or the run is interrupted), the `EXIT` trap still deletes the project, so dev/prod stay clean. `SMOKE_KEEP=1` is the only way to skip the cleanup. Verified for #47 by forcing a failure at step 4 (provider `groq` pointed at an unreachable `GROQ_BASE_URL` → 502): the trap printed `cleanup: deleted project <id> (HTTP 204)` and `GET /api/projects` listed no `smoke-test-*` project.
 - **Privacy:** prints only status codes, IDs, sizes, counts and timings, never response bodies, transcript text or secrets (`user:pass@` in the URL is masked).
 
 | Variable | Default | Effect |
@@ -81,6 +81,7 @@ make smoke SMOKE_URL=https://<dev-or-prod-url> # post-deploy check (M3)
 | `SMOKE_ALLOW_EMPTY_TEXT` | unset | `1` accepts an empty transcript (real Groq may return nothing for silent audio) |
 | `SMOKE_SKIP_SPA` | unset | `1` skips the SPA checks (API-only server, e.g. `uvicorn` without `STATIC_DIR`) |
 | `SMOKE_KEEP` | unset | `1` keeps the smoke project for debugging (no delete) |
+| `SMOKE_EXPECT_COMMIT` | unset | Full SHA; the health step fails unless `/api/health` reports exactly this `commit` |
 
 ## Markers and layout
 

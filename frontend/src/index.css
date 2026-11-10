@@ -141,6 +141,16 @@ a {
   padding: var(--space-5) var(--space-4) var(--space-7);
 }
 
+.app-footer {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: var(--space-3) var(--space-4) var(--space-5);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
 .page {
   display: flex;
   flex-direction: column;

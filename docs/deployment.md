@@ -13,7 +13,7 @@
 - A single image serves the FastAPI API and the built React SPA.
 - Configuration comes from env vars only (`DATABASE_URL`, `TRANSCRIBER_PROVIDER`, `GROQ_API_KEY`, …). See `.env.example`.
 - Migrations (`alembic upgrade head`) run on container start before uvicorn.
-- After each deploy, `scripts/smoke.sh <service-url>` gates success: health (retried for cold starts) and the full key journey with a throwaway `smoke-*` project that is always deleted. Against a Groq-backed service set `SMOKE_ALLOW_EMPTY_TEXT=1` (silent audio may transcribe to nothing). Each smoke run makes one real Groq call on prod; no key is needed by the script.
+- After each deploy, `scripts/smoke.sh <service-url>` gates success: health (retried for cold starts) and the full key journey with a throwaway `smoke-test-*` project that is always deleted. Against a Groq-backed service set `SMOKE_ALLOW_EMPTY_TEXT=1` (silent audio may transcribe to nothing). Each smoke run makes one real Groq call on prod; no key is needed by the script.
 
 ## Local: docker compose (M2, #22)
 
@@ -41,7 +41,7 @@ docker compose down -v           # stop and wipe the database
 - **Health:** `HEALTHCHECK` runs `docker/healthcheck.py` (stdlib `urllib`, no curl) against `GET /api/health`; the container is `healthy` only on 200 (database reachable).
 - **SPA:** `STATIC_DIR=/app/static` makes FastAPI serve `/assets/*` and fall back to `index.html` for any other non-`/api` GET (client routes like `/projects/<id>`). Unknown `/api/*` paths stay JSON 404. Without `STATIC_DIR` (dev, tests) the app serves the API only.
 - **Proxy:** uvicorn trusts `X-Forwarded-*` (`--proxy-headers`, `FORWARDED_ALLOW_IPS=*`) because Render terminates TLS in front of the container.
-- **Traceability:** the `GIT_SHA` build arg sets the `org.opencontainers.image.revision` label (CI passes `github.sha`).
+- **Traceability:** the `GIT_SHA` build arg sets the `org.opencontainers.image.revision` label (CI passes `github.sha`) and the runtime `GIT_SHA` env var, which `GET /api/health` reports as `commit`. On Render the build arg is not passed; Render's runtime `RENDER_GIT_COMMIT` wins. Neither set → `"unknown"`. `environment` is `APP_ENV`. The UI footer shows `v<version> · <7-char commit> · <environment>` (#47).
 - **CI:** the `docker` job in `ci.yml` builds the image on every PR (Buildx, GitHub Actions layer cache, no push), checks it is non-root, boots it with compose (`up -d --wait`) and runs `scripts/smoke.sh http://localhost:8000` (the whole key journey, see [testing.md](testing.md#end-to-end-smoke-test-scriptssmokesh-24)).
 
 ## To be documented in P3

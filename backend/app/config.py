@@ -11,6 +11,8 @@ LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
 DEFAULT_DATABASE_URL = "postgresql+psycopg://echonotes:echonotes@localhost:5432/echonotes"
 
+UNKNOWN_COMMIT = "unknown"
+
 _URL_PREFIXES = ("postgres://", "postgresql://")
 _PSYCOPG_PREFIX = "postgresql+psycopg://"
 
@@ -43,6 +45,9 @@ class Settings(BaseSettings):
     max_image_mb: int = Field(default=5, gt=0)
     # Built SPA (frontend/dist) served by FastAPI. Unset/empty = API only (dev, tests).
     static_dir: Path | None = None
+    # Deployed commit (US-17 AC3): set by Render at runtime, or by the Docker `GIT_SHA` build arg.
+    render_git_commit: str = ""
+    git_sha: str = ""
 
     @field_validator("log_level", mode="before")
     @classmethod
@@ -60,6 +65,14 @@ class Settings(BaseSettings):
         if isinstance(value, SecretStr):
             value = value.get_secret_value()
         return normalize_database_url(value) if isinstance(value, str) else value
+
+    @property
+    def deployed_commit(self) -> str:
+        """`RENDER_GIT_COMMIT`, else `GIT_SHA`, else `"unknown"` (empty values count as unset)."""
+        for value in (self.render_git_commit, self.git_sha):
+            if value.strip():
+                return value.strip()
+        return UNKNOWN_COMMIT
 
     @property
     def sqlalchemy_url(self) -> str:

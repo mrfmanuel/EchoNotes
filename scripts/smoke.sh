@@ -16,6 +16,10 @@
 #   SMOKE_ALLOW_EMPTY_TEXT=1    accept an empty transcript text (real Groq on silent audio)
 #   SMOKE_SKIP_SPA=1            skip the SPA checks (API-only server, e.g. uvicorn without STATIC_DIR)
 #   SMOKE_KEEP=1                keep the smoke project (skip the cleanup delete) for debugging
+#   SMOKE_EXPECT_COMMIT=<sha>   fail unless /api/health reports this full commit SHA (deploys)
+#
+# The smoke project is named `smoke-test-<UTC timestamp>-<pid>`. An EXIT trap deletes it even
+# when a step fails or the run is interrupted, so dev/prod keep no smoke data.
 set -euo pipefail
 
 usage() {
@@ -134,7 +138,14 @@ while :; do
   sleep 3
 done
 version="$(json_get "$WORK/health.json" version)"
-pass "health" "HTTP 200 database=ok version=$version attempts=$attempt ${TIME}s"
+commit="$(json_get "$WORK/health.json" commit)"
+environment="$(json_get "$WORK/health.json" environment)"
+[ -n "$commit" ] || fail "health" "HTTP 200 but commit is missing or empty"
+[ -n "$environment" ] || fail "health" "HTTP 200 but environment is missing or empty"
+if [ -n "${SMOKE_EXPECT_COMMIT:-}" ] && [ "$commit" != "$SMOKE_EXPECT_COMMIT" ]; then
+  fail "health" "commit $commit != expected $SMOKE_EXPECT_COMMIT (SMOKE_EXPECT_COMMIT)"
+fi
+pass "health" "HTTP 200 database=ok version=$version commit=${commit:0:7} environment=$environment attempts=$attempt ${TIME}s"
 
 # ---------------------------------------------------------------------------------------------
 # 2. SPA is served at / and for client routes; unknown /api paths stay JSON 404
@@ -155,9 +166,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------------------------
-# 3. Create a project with a unique name
+# 3. Create a project with a unique name that is clearly a smoke project (safe on prod: the
+#    EXIT trap deletes it even when a later step fails; only SMOKE_KEEP=1 skips that)
 # ---------------------------------------------------------------------------------------------
-project_name="smoke-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+project_name="smoke-test-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 request "$WORK/project.json" -X POST -H 'Content-Type: application/json' \
   -d "{\"name\":\"$project_name\"}" "$BASE_URL/api/projects"
 [ "$CODE" = "201" ] || fail "create project" "HTTP $CODE (want 201)"

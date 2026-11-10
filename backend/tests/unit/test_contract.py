@@ -11,9 +11,11 @@ import re
 from pathlib import Path
 from typing import Any
 
+import httpx2
 import pytest
 import yaml
 
+from app.config import get_settings
 from app.main import create_app
 
 CONTRACT = Path(__file__).resolve().parents[3] / "openapi.yaml"
@@ -101,3 +103,61 @@ def test_contract_test_detects_an_extra_operation(
     extra = _operations(spec).keys() - contract_ops.keys()
 
     assert extra == {("/api/extra/{}", "POST")}
+
+
+# --- Health response body vs. the `Health` schema (#47, US-17 AC3) ------------------------------
+
+
+def _schema_violations(body: dict[str, Any], schema: dict[str, Any]) -> list[str]:
+    """Validate a flat object of string properties (enough for `Health`; no new dependency)."""
+    properties: dict[str, Any] = schema["properties"]
+    problems = [f"missing {key}" for key in schema["required"] if key not in body]
+    problems += [f"undocumented {key}" for key in body if key not in properties]
+    for key, value in body.items():
+        rule = properties.get(key, {})
+        if rule.get("type") == "string" and not isinstance(value, str):
+            problems.append(f"{key} is not a string")
+        if "enum" in rule and value not in rule["enum"]:
+            problems.append(f"{key}={value!r} not in {rule['enum']}")
+    return problems
+
+
+@pytest.fixture(scope="module")
+def health_schema() -> dict[str, Any]:
+    spec = yaml.safe_load(CONTRACT.read_text(encoding="utf-8"))
+    return spec["components"]["schemas"]["Health"]
+
+
+def test_health_schema_requires_commit_and_environment(health_schema: dict[str, Any]) -> None:
+    required = set(health_schema["required"])
+
+    assert {"status", "version", "database", "commit", "environment"} <= required
+    assert health_schema["properties"]["commit"]["type"] == "string"
+    assert health_schema["properties"]["environment"]["enum"] == ["local", "dev", "prod"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("app_env", ["local", "dev", "prod"])
+async def test_health_response_validates_against_the_contract_schema(
+    client: httpx2.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    health_schema: dict[str, Any],
+    app_env: str,
+) -> None:
+    monkeypatch.setenv("APP_ENV", app_env)
+    monkeypatch.setenv("GIT_SHA", "0f1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6")
+    get_settings.cache_clear()
+
+    response = await client.get("/api/health")
+
+    assert response.status_code == 200
+    assert _schema_violations(response.json(), health_schema) == []
+
+
+def test_schema_check_detects_a_missing_or_invalid_field(health_schema: dict[str, Any]) -> None:
+    body = {"status": "ok", "version": "0.1.0", "database": "ok", "environment": "staging"}
+
+    assert _schema_violations(body, health_schema) == [
+        "missing commit",
+        "environment='staging' not in ['local', 'dev', 'prod']",
+    ]

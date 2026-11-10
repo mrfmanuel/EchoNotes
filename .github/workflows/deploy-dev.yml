@@ -1,0 +1,78 @@
+name: Deploy dev
+
+# CD to dev (#25): after CI passes on a push to main, deploy exactly that commit to the Render
+# service echonotes-dev, wait until /api/health reports it, then run the smoke test.
+# All deploy logic lives in scripts/deploy.sh. Never runs for pull requests: workflow_run only
+# fires for CI runs on main, and the job also requires event == push from this repository.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit SHA on main to deploy (short or full). Empty = current main HEAD."
+        required: false
+        default: ""
+
+run-name: >-
+  Deploy dev ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha
+  || inputs.ref || 'main HEAD' }}
+
+# One dev deploy at a time; a running deploy is never cancelled (a newer one waits; GitHub keeps
+# only the newest pending run, so the latest main commit wins).
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to dev (hook + verify commit + smoke)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: development
+      url: ${{ vars.DEV_URL }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # workflow_run: the commit CI just tested; dispatch: main (the workflow's own ref).
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Resolve the commit to deploy
+        id: target
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            sha="$RUN_SHA"
+          elif [ -n "$INPUT_REF" ]; then
+            sha="$(scripts/resolve-commit.sh ref "$INPUT_REF")"
+          else
+            sha="$(git rev-parse origin/main)"
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Deploying $sha to dev"
+
+      - name: Deploy, verify and smoke test (scripts/deploy.sh)
+        env:
+          DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEV_DEPLOY_HOOK }}
+          DEV_URL: ${{ vars.DEV_URL }}
+          SHA: ${{ steps.target.outputs.sha }}
+          DEPLOY_SUMMARY_TITLE: Deploy dev
+        run: scripts/deploy.sh dev "$DEV_URL" "$SHA"

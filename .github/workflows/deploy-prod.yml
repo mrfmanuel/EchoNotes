@@ -1,0 +1,150 @@
+name: Deploy prod
+
+# Manual promotion to prod (#26). Only workflow_dispatch: never on push or pull_request.
+#   1. resolve (no environment): target SHA (input, or the commit running on dev) and
+#      previous_commit (the commit running on prod now).
+#   2. deploy (environment `production`: waits for the required reviewer): scripts/deploy.sh;
+#      on failure, automatic rollback to previous_commit with the same script, and the run
+#      still ends failed.
+#
+#   gh workflow run deploy-prod.yml                  # promote what dev runs now
+#   gh workflow run deploy-prod.yml -f ref=<sha>     # promote a specific commit on main
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit SHA on main to promote (short or full). Empty = the commit running on dev."
+        required: false
+        default: ""
+
+run-name: Deploy prod ${{ inputs.ref || '(commit running on dev)' }}
+
+# One prod deploy (or prod rollback, see rollback.yml) at a time; never cancelled mid-deploy.
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve target and previous commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      previous_commit: ${{ steps.resolve.outputs.previous_commit }}
+      rollback_possible: ${{ steps.resolve.outputs.rollback_possible }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve ref and read prod's current commit
+        id: resolve
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          DEV_URL: ${{ vars.DEV_URL }}
+          PROD_URL: ${{ vars.PROD_URL }}
+        run: |
+          set -euo pipefail
+          if [ -n "$INPUT_REF" ]; then
+            requested="$INPUT_REF"
+            source_note="input"
+          else
+            requested="$(scripts/resolve-commit.sh health "$DEV_URL")"
+            source_note="commit running on dev ($DEV_URL)"
+            if [ "$requested" = "unknown" ]; then
+              echo "::error::No ref given and dev does not report a commit in /api/health"
+              {
+                echo "### Deploy prod: not started"
+                echo ""
+                echo "No \`ref\` input and \`$DEV_URL/api/health\` did not report a commit (unknown or unreachable)."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+          fi
+          sha="$(scripts/resolve-commit.sh ref "$requested")"
+          previous="$(scripts/resolve-commit.sh health "$PROD_URL")"
+          if printf '%s' "$previous" | grep -Eq '^[0-9a-f]{40}$' && [ "$previous" != "$sha" ]; then
+            rollback_possible=true
+          else
+            rollback_possible=false
+          fi
+          {
+            echo "sha=$sha"
+            echo "previous_commit=$previous"
+            echo "rollback_possible=$rollback_possible"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Deploy prod: plan"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Requested ref | \`$requested\` ($source_note) |"
+            echo "| Resolved commit | \`$sha\` |"
+            echo "| previous_commit (running on prod) | \`$previous\` |"
+            echo "| Prod URL | $PROD_URL |"
+            echo "| Automatic rollback available | $rollback_possible |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rollback_possible" != "true" ]; then
+            msg="previous_commit is '$previous': automatic rollback will NOT be possible if this deploy fails"
+            echo "::warning::$msg"
+            echo "> **Warning:** $msg." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  deploy:
+    name: Deploy to prod (approval + hook + verify + smoke, auto-rollback)
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment:
+      name: production
+      url: ${{ vars.PROD_URL }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Deploy, verify and smoke test (scripts/deploy.sh)
+        id: deploy
+        env:
+          DEPLOY_HOOK_URL: ${{ secrets.RENDER_PROD_DEPLOY_HOOK }}
+          PROD_URL: ${{ vars.PROD_URL }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          PREVIOUS_COMMIT: ${{ needs.resolve.outputs.previous_commit }}
+          DEPLOY_SUMMARY_TITLE: Deploy prod
+        run: scripts/deploy.sh prod "$PROD_URL" "$SHA"
+
+      - name: Automatic rollback to previous_commit
+        id: rollback
+        if: failure() && steps.deploy.outcome == 'failure' && needs.resolve.outputs.rollback_possible == 'true'
+        env:
+          DEPLOY_HOOK_URL: ${{ secrets.RENDER_PROD_DEPLOY_HOOK }}
+          PROD_URL: ${{ vars.PROD_URL }}
+          PREVIOUS: ${{ needs.resolve.outputs.previous_commit }}
+          DEPLOY_SUMMARY_TITLE: Automatic rollback (prod)
+        run: scripts/deploy.sh prod "$PROD_URL" "$PREVIOUS"
+
+      - name: Outcome
+        if: always()
+        env:
+          SHA: ${{ needs.resolve.outputs.sha }}
+          PREVIOUS: ${{ needs.resolve.outputs.previous_commit }}
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          ROLLBACK_OUTCOME: ${{ steps.rollback.outcome }}
+          ROLLBACK_POSSIBLE: ${{ needs.resolve.outputs.rollback_possible }}
+        run: |
+          set -euo pipefail
+          if [ "$DEPLOY_OUTCOME" = "success" ]; then
+            line="Prod now runs \`$SHA\` (previous_commit \`$PREVIOUS\`)."
+          elif [ "$ROLLBACK_POSSIBLE" != "true" ]; then
+            line="Deploy of \`$SHA\` **FAILED** ($DEPLOY_OUTCOME). No automatic rollback: previous_commit is \`$PREVIOUS\`. Roll back manually (rollback.yml or the Render dashboard)."
+          elif [ "$ROLLBACK_OUTCOME" = "success" ]; then
+            line="Deploy of \`$SHA\` **FAILED**. Automatic rollback to \`$PREVIOUS\` succeeded (verified + smoke). The run is marked failed."
+          else
+            line="Deploy of \`$SHA\` **FAILED** and the automatic rollback to \`$PREVIOUS\` **FAILED** ($ROLLBACK_OUTCOME). Prod needs manual attention: see docs/release-process.md."
+          fi
+          { echo "### Result"; echo ""; echo "$line"; } >> "$GITHUB_STEP_SUMMARY"
+          echo "$line"

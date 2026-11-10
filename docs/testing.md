@@ -82,6 +82,16 @@ make smoke SMOKE_URL=https://<dev-or-prod-url> # post-deploy check (M3)
 | `SMOKE_SKIP_SPA` | unset | `1` skips the SPA checks (API-only server, e.g. `uvicorn` without `STATIC_DIR`) |
 | `SMOKE_KEEP` | unset | `1` keeps the smoke project for debugging (no delete) |
 
+## Deploy script tests (`scripts/deploy.sh`, #25 #26 #27)
+
+```bash
+bash scripts/tests/test_deploy.sh    # ~40 s, Linux or Git Bash; needs curl + Python 3
+```
+
+- Runs `scripts/deploy.sh` and `scripts/resolve-commit.sh` against `scripts/tests/deploy_mock.py`, a local stub of the Render deploy hook and `/api/health` on a free `127.0.0.1` port; `scripts/tests/fake_smoke.sh` stands in for `smoke.sh`. **Never calls the real Render hooks.**
+- Covers: success (health 503 → old commit → new commit), hook `202` retried with backoff, `202` beyond `DEPLOY_HOOK_WAIT`, `404` (unknown SHA / bad key), other status, unreachable hook, verify timeout, smoke failure, environment mismatch, invalid SHA, missing hook URL, `::add-mask::`, the hook key never appearing in output or job summaries, and SHA resolution (short → full, only commits on `origin/main`).
+- Not part of `ci.yml` (kept unchanged); run it locally whenever `deploy.sh`, `resolve-commit.sh` or the deploy workflows change.
+
 ## Markers and layout
 
 - **Marker `integration`** (registered in `backend/pyproject.toml`; `--strict-markers` is on). Integration modules set `pytestmark = pytest.mark.integration`. When `TEST_DATABASE_URL` is unset they are **skipped** with the reason "set TEST_DATABASE_URL (or run `make test`)", so `uv run pytest` works without Docker.

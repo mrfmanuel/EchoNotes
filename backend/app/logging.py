@@ -19,6 +19,8 @@ request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
 _STANDARD_ATTRS = frozenset(
     vars(logging.LogRecord("", 0, "", 0, "", None, None)).keys() | {"message", "asctime"}
 )
+# Extras never emitted: uvicorn's `color_message` duplicates `message` with ANSI escapes (#41).
+_DROPPED_EXTRAS = frozenset({"color_message"})
 _UVICORN_LOGGERS = ("uvicorn", "uvicorn.error")
 # HTTP client libraries log full URLs (with query strings) at INFO; keep only their warnings.
 _QUIET_LOGGERS = ("httpx", "httpx2", "httpcore", "httpcore2")
@@ -36,7 +38,7 @@ class JsonFormatter(logging.Formatter):
             "request_id": request_id_var.get(),
         }
         for key, value in vars(record).items():
-            if key not in _STANDARD_ATTRS and key not in payload:
+            if key not in _STANDARD_ATTRS and key not in _DROPPED_EXTRAS and key not in payload:
                 payload[key] = value
         if record.exc_info and record.exc_info[0] is not None:
             exc_type, _exc, tb = record.exc_info

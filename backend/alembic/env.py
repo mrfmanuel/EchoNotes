@@ -1,9 +1,8 @@
 """Alembic environment. Runs migrations with a sync psycopg engine.
 
 The URL always comes from `DATABASE_URL` via app settings (never from alembic.ini).
+Migration logs use the app's JSON log format on stdout at `LOG_LEVEL` (#41).
 """
-
-from logging.config import fileConfig
 
 from sqlalchemy import create_engine, pool
 
@@ -11,11 +10,13 @@ from alembic import context
 from app.config import get_settings
 from app.db import models  # noqa: F401  (registers the tables on Base.metadata)
 from app.db.base import Base
+from app.logging import configure_logging
 
 config = context.config
 
-if config.config_file_name is not None and config.attributes.get("configure_logger", True):
-    fileConfig(config.config_file_name, disable_existing_loggers=False)
+# Callers that already configured logging (the test fixtures) pass configure_logger=False.
+if config.attributes.get("configure_logger", True):
+    configure_logging(get_settings().log_level)
 
 target_metadata = Base.metadata
 

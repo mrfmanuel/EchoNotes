@@ -12,13 +12,19 @@ TEST_DATABASE_URL ?= postgresql+psycopg://echonotes_test:echonotes_test@localhos
 help: ## Show the available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
 
+# One command for everything (#23). The EXIT trap always removes the throwaway database, also
+# when `up` fails or on Ctrl+C (INT/TERM exit through the trap). The frontend tests run even
+# if the backend tests failed, both results are printed, and the exit code is non-zero if
+# either suite failed.
 test: ## Backend unit + integration (throwaway Postgres) and frontend tests; always tears down
-	@$(TEST_COMPOSE) up -d --wait testdb
-	@status=0; \
-	(cd backend && TEST_DATABASE_URL='$(TEST_DATABASE_URL)' TRANSCRIBER_PROVIDER=fake uv run pytest) || status=$$?; \
-	if [ $$status -eq 0 ]; then (cd frontend && npm test) || status=$$?; fi; \
-	$(TEST_COMPOSE) down -v; \
-	exit $$status
+	@trap '$(TEST_COMPOSE) down -v' EXIT; \
+	trap 'exit 130' INT TERM; \
+	$(TEST_COMPOSE) up -d --wait testdb; \
+	backend=0; frontend=0; \
+	(cd backend && TEST_DATABASE_URL='$(TEST_DATABASE_URL)' TRANSCRIBER_PROVIDER=fake uv run pytest) || backend=$$?; \
+	(cd frontend && npm test) || frontend=$$?; \
+	echo "make test: backend (unit + integration) exit $$backend, frontend exit $$frontend"; \
+	[ $$backend -eq 0 ] && [ $$frontend -eq 0 ]
 
 test-unit: ## Fast tests without Docker: backend unit tests + frontend tests
 	cd backend && TRANSCRIBER_PROVIDER=fake uv run pytest -m "not integration"

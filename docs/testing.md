@@ -1,35 +1,56 @@
 # Testing Strategy
 
-> Status: M2 in progress. The integration harness (throwaway Postgres, `integration` marker, `make test`, CI service container) exists since PR-A (#9/#16/#35, Refs #23). Cross-feature tests arrive with #23's completion PR.
+> Status: implemented for M2 (#23). Every suite below exists, runs with one command (`make test`) and runs in CI on every PR.
 
 ## Test pyramid
 
-| Level | Tooling | Scope | Runs in |
-|---|---|---|---|
-| Backend unit | `pytest`, SQLite in-memory, `FakeTranscriber` | Services, slugging, validation, export builder, transcriber factory, Groq client with mocked HTTP (`respx`) | every PR |
-| Backend integration | `pytest -m integration` + real Postgres 16 (service container in CI, `docker-compose.test.yml` locally) + `httpx2.AsyncClient` | Migrations, API endpoints end to end with persistence, cascades and ZIP structure | every PR |
-| Frontend unit/component | Vitest + Testing Library + jsdom | Components and pages with a mocked API client | every PR |
-| End-to-end smoke | `scripts/smoke.sh` (bash + curl + Python 3) against a running stack | Key journey: health → SPA → create project → upload audio → transcript → screenshot → export ZIP → delete | every PR (CI `docker` job, compose stack); after every deploy (M3) |
+Counts as of PR-I (#23/#41). `pytest --collect-only -q` and `npx vitest run` print the current numbers.
+
+| Level | Tests | Tooling | What it covers | Runs in |
+|---|---:|---|---|---|
+| Backend unit | 387 | `pytest`, AnyIO, in-memory SQLite (`aiosqlite`), `httpx2.ASGITransport`, fake/stub transcribers | Settings, slugs, upload and image validation, transcript formatting, export plan, every API endpoint (happy path + 4xx/5xx shapes), request IDs and JSON logs, Groq client with a mocked HTTP layer, SPA serving, event loop selection (#41), Alembic CLI logs as JSON (#41), **contract test** (`openapi.yaml` ↔ FastAPI) | every PR (`backend` job), `make test`, `make test-unit` |
+| Backend integration | 38 | `pytest -m integration`, real Postgres 16, Alembic migrations, `httpx2.ASGITransport` | Migrations (empty DB → head, downgrade/upgrade round trip, models == migrations), cascades and `SET NULL` on Postgres, every API flow with persistence (bytea, `timestamptz`, unique slugs), export ZIP tree, **full flow** and **privacy** test | every PR (`backend` job with a `postgres:16` service), `make test` |
+| Frontend component | 129 | Vitest + Testing Library + jsdom, mocked API client | Pages and components: projects, upload/record, transcript editor (copy, download, unsaved changes), screenshots (picker, Ctrl+V paste, link, gallery), export, API client errors | every PR (`frontend` job), `make test`, `make test-unit` |
+| End-to-end smoke | 1 script (8 steps) | `scripts/smoke.sh` (bash + curl + Python 3) against a running stack | Key journey: health → SPA → create project → upload audio → transcript → screenshot → export ZIP → delete | every PR (CI `docker` job, compose stack); after every deploy (M3) |
+
+### Backend suites in detail
+
+| File | Tests | Covers |
+|---|---:|---|
+| `integration/test_full_flow_pg.py` | 2 | create project → upload audio (fake) → edit transcript → attach a linked screenshot → export ZIP (exact tree, edited text in `.md`/`.txt`, README links) → delete project (no `project`/`transcript`/`screenshot` rows left). The privacy test runs the same flow at `LOG_LEVEL=DEBUG` and asserts no stdout/stderr line or log record contains the project name, transcript title, transcript text or any filename |
+| `integration/test_migrations.py` | 3 | `alembic upgrade head` on a brand-new empty schema (tables created, autogenerate diff empty, JSON migration logs without the URL); `downgrade base` → `upgrade head`; migrated schema == models |
+| `integration/test_cascade_pg.py`, `test_screenshots_export_pg.py` | 11 | `ON DELETE CASCADE` (project → transcripts, screenshots), `SET NULL` (transcript → screenshot link), bytea round trip at 5 MiB, export tree on Postgres |
+| `integration/test_projects_pg.py`, `test_transcriptions_pg.py`, `test_transcripts_manage_pg.py`, `test_health_pg.py` | 22 | Endpoint behavior on Postgres: slugs, ordering, `updated_at` bumps, provider errors store nothing, health `database: ok` |
+| `unit/test_contract.py` | 5 | Same `(path, method)` set in `openapi.yaml` and `app.openapi()` (only `/api/*`; path params normalized), same `operationId`s, same success codes, every documented error code is declared |
+| `unit/test_event_loop.py`, `unit/test_migration_logs.py`, `unit/test_logging.py` | 16 | #41: selector loop on Windows (monkeypatched `sys.platform`, passes on Linux), `--loop app.event_loop:new_event_loop` resolves, Proactor warning; Alembic CLI logs are JSON; no `color_message`/ANSI in logs |
+
+### Intentional differences between `openapi.yaml` and the FastAPI schema
+
+The contract test allows exactly one difference: FastAPI adds an automatic `422` response to every operation that has a path parameter (a malformed UUID fails request validation). The contract documents `422` only where a body or query value can be invalid. Everything else (paths, methods, `operationId`s, success codes, documented error codes) must match.
 
 ## Commands
 
 ```bash
-# everything with one command (repo root): starts a throwaway Postgres 16 on host port 55432
-# (tmpfs, project "echonotes-test"), runs backend unit + integration and frontend tests,
-# always tears it down, and exits non-zero on any failure
+# Everything with one command (repo root). Starts a throwaway Postgres 16 on host port 55432
+# (tmpfs, compose project "echonotes-test"), runs backend unit + integration tests, then the
+# frontend tests even if the backend failed, prints both exit codes, ALWAYS runs `down -v`
+# (also on failure and Ctrl+C), and exits non-zero if either suite failed.
 make test
 
 make test-unit             # no Docker: backend `pytest -m "not integration"` + frontend tests
 make lint                  # ruff check + format check, oxlint, tsc
+make up && make smoke      # end-to-end smoke test against the compose stack (see below)
 
-# backend only
-cd backend
+# backend only (from backend/)
 uv run pytest                          # unit tests; integration tests SKIP without TEST_DATABASE_URL
 uv run pytest -m "not integration"     # unit tests only
-TEST_DATABASE_URL=postgresql+psycopg://echonotes_test:echonotes_test@localhost:55432/echonotes_test   uv run pytest                        # unit + integration against a running test DB
+uv run pytest -m integration           # integration only (needs TEST_DATABASE_URL)
+docker compose -f ../docker-compose.test.yml up -d --wait testdb
+TEST_DATABASE_URL=postgresql+psycopg://echonotes_test:echonotes_test@localhost:55432/echonotes_test \
+  uv run pytest                        # unit + integration against the running test DB
+docker compose -f ../docker-compose.test.yml down -v
 
-# frontend
-cd frontend
+# frontend only (from frontend/)
 npm test                   # vitest run
 ```
 
@@ -61,15 +82,27 @@ make smoke SMOKE_URL=https://<dev-or-prod-url> # post-deploy check (M3)
 | `SMOKE_SKIP_SPA` | unset | `1` skips the SPA checks (API-only server, e.g. `uvicorn` without `STATIC_DIR`) |
 | `SMOKE_KEEP` | unset | `1` keeps the smoke project for debugging (no delete) |
 
-## Backend layout and fixtures
+## Markers and layout
 
-- `backend/tests/unit/`: fast tests. Each test gets a fresh in-memory SQLite schema (`sqlite+aiosqlite`, `StaticPool`, `PRAGMA foreign_keys=ON`, `Base.metadata.create_all`) and the app with `get_session` overridden through `app.dependency_overrides`. Async tests use the AnyIO pytest plugin (`pytest.mark.anyio`).
-- `backend/tests/integration/`: modules set `pytestmark = pytest.mark.integration` (the marker is registered in `pyproject.toml`, `--strict-markers` is on). They read `TEST_DATABASE_URL`, run `alembic upgrade head` once per session through the real `alembic.ini`/`env.py` (URL taken from `DATABASE_URL` via settings), and `TRUNCATE` all tables before each test.
+- **Marker `integration`** (registered in `backend/pyproject.toml`; `--strict-markers` is on). Integration modules set `pytestmark = pytest.mark.integration`. When `TEST_DATABASE_URL` is unset they are **skipped** with the reason "set TEST_DATABASE_URL (or run `make test`)", so `uv run pytest` works without Docker.
+- **Async tests** use the AnyIO pytest plugin (`pytest.mark.anyio`). On Windows the `anyio_backend` fixture uses a selector loop, because psycopg's async mode cannot use the Proactor loop.
+- `backend/tests/unit/`: each test gets a fresh in-memory SQLite schema (`sqlite+aiosqlite`, `StaticPool`, `PRAGMA foreign_keys=ON`, `Base.metadata.create_all`) and the app with `get_session` overridden through `app.dependency_overrides`.
+- `backend/tests/integration/`: read `TEST_DATABASE_URL`, run `alembic upgrade head` once per session through the real `alembic.ini`/`env.py` (URL from `DATABASE_URL` via settings), and `TRUNCATE` all tables before each test.
+- Shared helpers: `tests/image_utils.py` (image payloads with real magic bytes, ZIP reader), `tests/transcription_utils.py` (stub transcribers, upload helper), `tests/project_utils.py` (seed rows), `tests/log_utils.py` (parse JSON log lines).
 - An autouse fixture clears the backend env vars and the cached settings/engine for every test, so a developer's shell or `.env` never leaks into tests.
-- CI (`.github/workflows/ci.yml`) runs the backend job with a `postgres:16` service container and `TEST_DATABASE_URL`, so unit **and** integration tests run on every PR.
+- Frontend tests sit next to the code (`*.test.ts(x)`). `src/test/setup.ts` runs after every test: Testing Library `cleanup`, real timers, `vi.restoreAllMocks()` and `vi.unstubAllGlobals()`, so no stubbed global (`MediaRecorder`, `window.confirm`, ...) leaks into the next test.
+
+## CI jobs (`.github/workflows/ci.yml`)
+
+| Job | Steps |
+|---|---|
+| `backend` | `postgres:16` service container + `TEST_DATABASE_URL`, `uv sync --frozen`, ruff check, ruff format check, `pytest` (unit + integration) |
+| `frontend` | `npm ci`, oxlint, `tsc -b`, `vitest run`, `vite build` |
+| `docker` | build the image, check non-root/no Node/no uv, `docker compose up --wait`, `scripts/smoke.sh http://localhost:8000`, logs on failure, `down -v` |
 
 ## Rules
 
-- Tests are written **with** the code, in the same PR, and each acceptance criterion maps to at least one test.
-- CI never calls the real Groq API (`TRANSCRIBER_PROVIDER=fake`).
-- Tests never assert on log lines that contain user content, because there must not be any.
+- Tests are written **with** the code, in the same PR, and each acceptance criterion maps to at least one test named after it.
+- Tests and CI never call the real Groq API (`TRANSCRIBER_PROVIDER=fake`; the Groq client is tested with a mocked HTTP layer).
+- Tests never assert on log lines that contain user content, because there must not be any. The privacy test enforces it for the full flow.
+- A flaky test is a bug: fix the cause (for example the Ctrl+V paste listener is registered in a layout effect so it is attached as soon as the gallery is visible), never add retries.

@@ -6,8 +6,10 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "alembic>=1.20.1",
     "fastapi>=0.162.3",
+    "httpx2>=2.16.0",
     "psycopg[binary]>=3.3.8",
     "pydantic-settings>=2.16.2",
+    "python-multipart>=0.0.33",
     "sqlalchemy[asyncio]>=2.1.8",
     "uvicorn[standard]>=0.54.0",
 ]
@@ -40,7 +42,6 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "ASYNC"]
 [dependency-groups]
 dev = [
     "aiosqlite>=0.22.1",
-    "httpx2>=2.16.0",
     "pytest>=9.2.0",
     "ruff>=0.17.4",
 ]

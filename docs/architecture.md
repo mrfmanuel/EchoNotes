@@ -89,7 +89,7 @@ erDiagram
 
 ## Frontend (`frontend/`)
 
-- Vite + React 18 + TypeScript, React Router, plain CSS modules (no UI framework, to keep it small).
+- Vite + React 19 + TypeScript, React Router, plain CSS modules (no UI framework, to keep it small).
 - `src/api/client.ts` is a typed fetch wrapper that follows `openapi.yaml`.
 - Pages: `ProjectsPage`, `ProjectPage` (upload/record, transcript list, screenshot gallery and paste handler) and `TranscriptPage` (edit, copy, download).
 - Recording uses `MediaRecorder` (`audio/webm;codecs=opus` with a fallback to `audio/ogg`).

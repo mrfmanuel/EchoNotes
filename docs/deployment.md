@@ -44,6 +44,28 @@ docker compose down -v           # stop and wipe the database
 - **Traceability:** the `GIT_SHA` build arg sets the `org.opencontainers.image.revision` label (CI passes `github.sha`) and the runtime `GIT_SHA` env var, which `GET /api/health` reports as `commit`. On Render the build arg is not passed; Render's runtime `RENDER_GIT_COMMIT` wins. Neither set → `"unknown"`. `environment` is `APP_ENV`. The UI footer shows `v<version> · <7-char commit> · <environment>` (#47).
 - **CI:** the `docker` job in `ci.yml` builds the image on every PR (Buildx, GitHub Actions layer cache, no push), checks it is non-root, boots it with compose (`up -d --wait`) and runs `scripts/smoke.sh http://localhost:8000` (the whole key journey, see [testing.md](testing.md#end-to-end-smoke-test-scriptssmokesh-24)).
 
+## CD workflows and `scripts/deploy.sh` (#25, #26, #27)
+
+| Workflow | Trigger | GitHub environment | Does |
+|---|---|---|---|
+| `deploy-dev.yml` | `workflow_run` of **CI** succeeding on a push to `main` (+ `workflow_dispatch`, optional `ref`) | `development` | deploys exactly the commit CI tested |
+| `deploy-prod.yml` | `workflow_dispatch` only (`ref`, empty = commit running on dev) | `production` (required reviewer) | records `previous_commit`, deploys, auto-rolls back to `previous_commit` on failure (run still fails) |
+| `rollback.yml` | `workflow_dispatch` only (`environment` dev\|prod, `ref`) | `development` / `production` | redeploys a known-good commit on `main` |
+
+None of them run for pull requests. Concurrency groups `deploy-dev` / `deploy-prod` are shared with `rollback.yml`, so deploys and rollbacks of one environment never overlap.
+
+All three call the same script (no deploy logic in YAML):
+
+```bash
+DEPLOY_HOOK_URL=<hook> scripts/deploy.sh <dev|prod> <base-url> <full-40-char-sha>
+scripts/resolve-commit.sh ref <short-or-full-sha>   # full SHA, must be on origin/main
+scripts/resolve-commit.sh health <base-url>         # commit running there, or "unknown"
+```
+
+`deploy.sh`: triggers the Render deploy hook with `&ref=<sha>` (200 = started, 202 = another deploy in progress → retried with backoff up to `DEPLOY_HOOK_WAIT`=600 s, anything else fails), polls `/api/health` every 15 s until `commit == sha` (`DEPLOY_TIMEOUT`=900 s, 5xx/timeouts tolerated) and `environment` matches, then runs `SMOKE_ALLOW_EMPTY_TEXT=1 SMOKE_EXPECT_COMMIT=<sha> scripts/smoke.sh <base-url>`. It writes a job summary (env, URL, target, commit running before, deploy id, result, durations). The hook URL comes only from `DEPLOY_HOOK_URL`, is never printed and is masked in Actions. Smoke on dev/prod uses the service's real provider (Groq) with the 1 s silent clip: one Groq call per deploy, made by the service itself; CI never holds the Groq key.
+
+Secrets / variables used (names only): `RENDER_DEV_DEPLOY_HOOK`, `RENDER_PROD_DEPLOY_HOOK` (repo secrets); `DEV_URL`, `PROD_URL` (repo variables). Tests: `bash scripts/tests/test_deploy.sh` ([testing.md](testing.md#deploy-script-tests-scriptsdeploysh-25-26-27)).
+
 ## To be documented in P3
 
 - Render service and DB setup steps (including the manual steps for the human)

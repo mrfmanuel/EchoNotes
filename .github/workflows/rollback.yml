@@ -1,0 +1,92 @@
+name: Rollback
+
+# Manual rollback of dev or prod to a known-good commit on main (#27). Same deploy + verify +
+# smoke logic as the deploy workflows (scripts/deploy.sh); prod goes through the same
+# `production` approval gate. Only workflow_dispatch: never on push or pull_request.
+#
+#   gh workflow run rollback.yml -f environment=dev  -f ref=<sha>
+#   gh workflow run rollback.yml -f environment=prod -f ref=<sha>
+#
+# Rollback targets must report `commit` in /api/health (any commit after #47); older commits
+# cannot be verified and the run fails at "verify commit".
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to roll back"
+        required: true
+        type: choice
+        options: [dev, prod]
+      ref:
+        description: "Commit SHA on main to roll back to (short or full)"
+        required: true
+
+run-name: Rollback ${{ inputs.environment }} to ${{ inputs.ref }}
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve target and current commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      current: ${{ steps.resolve.outputs.current }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve ref and read the running commit
+        id: resolve
+        env:
+          TARGET_ENV: ${{ inputs.environment }}
+          INPUT_REF: ${{ inputs.ref }}
+          BASE_URL: ${{ inputs.environment == 'prod' && vars.PROD_URL || vars.DEV_URL }}
+        run: |
+          set -euo pipefail
+          sha="$(scripts/resolve-commit.sh ref "$INPUT_REF")"
+          current="$(scripts/resolve-commit.sh health "$BASE_URL")"
+          {
+            echo "sha=$sha"
+            echo "current=$current"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Rollback $TARGET_ENV: plan"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Environment | \`$TARGET_ENV\` ($BASE_URL) |"
+            echo "| Running before | \`$current\` |"
+            echo "| Target ref | \`$INPUT_REF\` -> \`$sha\` |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  rollback:
+    name: Roll back ${{ inputs.environment }} (hook + verify + smoke)
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Job-level group deploy-dev / deploy-prod, the same names as the deploy-dev job and the
+    # deploy-prod workflow (groups are repository-wide), so a rollback never overlaps a deploy.
+    concurrency:
+      group: deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    environment:
+      name: ${{ inputs.environment == 'prod' && 'production' || 'development' }}
+      url: ${{ inputs.environment == 'prod' && vars.PROD_URL || vars.DEV_URL }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Deploy the rollback target (scripts/deploy.sh)
+        env:
+          DEPLOY_HOOK_URL: ${{ inputs.environment == 'prod' && secrets.RENDER_PROD_DEPLOY_HOOK || secrets.RENDER_DEV_DEPLOY_HOOK }}
+          BASE_URL: ${{ inputs.environment == 'prod' && vars.PROD_URL || vars.DEV_URL }}
+          TARGET_ENV: ${{ inputs.environment }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          PREVIOUS_COMMIT: ${{ needs.resolve.outputs.current }}
+          DEPLOY_SUMMARY_TITLE: Rollback ${{ inputs.environment }}
+        run: scripts/deploy.sh "$TARGET_ENV" "$BASE_URL" "$SHA"

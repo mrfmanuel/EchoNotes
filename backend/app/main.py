@@ -10,6 +10,7 @@ from app.db.session import dispose_engine
 from app.errors import register_error_handlers
 from app.logging import configure_logging
 from app.middleware import RequestContextMiddleware
+from app.spa import mount_spa
 from app.transcription import build_transcriber
 
 
@@ -32,6 +33,8 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(projects.router)
     app.include_router(transcriptions.router)
+    # Keep last: the SPA catch-all must come after every API router.
+    mount_spa(app, settings.static_dir)
     return app
 
 

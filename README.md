@@ -60,7 +60,7 @@ In production, one Docker image serves both the API and the built SPA. Images ar
 
 | Way | Command | Status |
 |---|---|---|
-| Whole system (app + Postgres) | `cp .env.example .env && docker compose up --build` → <http://localhost:8000> | *planned in P2* ([#22](https://github.com/mrfmanuel/EchoNotes/issues/22)) |
+| Whole system (app + Postgres) | `docker compose up --build` (or `make up`) → <http://localhost:8000>; stop with `docker compose down` (keeps data) or `docker compose down -v` (wipes it). No `.env` needed: it uses the fake transcriber and a local Postgres. | ✅ available |
 | Backend only | `cd backend && uv sync && uv run alembic upgrade head && uv run uvicorn app.main:app --reload --port 8000` → <http://localhost:8000/api/health> (needs Postgres at `DATABASE_URL`; add `--env-file ../.env` after `uv run` to load `.env`) | ✅ available |
 | Frontend only (skeleton) | `cd frontend && npm ci && npm run dev` → <http://localhost:5173> | ✅ available |
 

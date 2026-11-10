@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Screenshot, Transcript
 from app.services.transcript_format import render_markdown
+from tests.image_utils import unzip
 from tests.project_utils import add_screenshot, add_transcript, at, set_timestamps
 from tests.transcription_utils import upload
 
@@ -126,3 +127,18 @@ async def test_download_md_matches_shared_renderer_on_postgres(
     stored = await pg_session.get(Transcript, uuid.UUID(transcript_id))
     assert stored is not None
     assert response.content == render_markdown(stored).encode("utf-8")
+
+
+@pytest.mark.parametrize("download_format", ["md", "txt"])
+async def test_download_is_byte_identical_to_export_zip_entry_on_postgres(
+    pg_client: httpx2.AsyncClient, download_format: str
+) -> None:
+    project_id = await _project(pg_client, "Clase de Física")
+    transcript_id = await _transcript(pg_client, project_id, "Óptica 1")
+
+    download = await pg_client.get(
+        f"/api/transcriptions/{transcript_id}/download", params={"format": download_format}
+    )
+    files = unzip((await pg_client.get(f"/api/projects/{project_id}/export")).content)
+
+    assert files[f"clase-de-fisica/transcripts/optica-1.{download_format}"] == download.content

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import TRANSCRIPT_TITLE_MAX, Screenshot, Transcript
 from app.services.transcript_format import render_markdown, render_text
+from tests.image_utils import unzip
 from tests.log_utils import parse_json_logs
 from tests.project_utils import add_screenshot, add_transcript, at, set_timestamps
 from tests.transcription_utils import upload
@@ -399,3 +400,21 @@ async def test_edit_download_delete_never_log_title_or_text(
     assert "secret-title-zeta" not in output
     messages = {r["message"] for r in parse_json_logs(output)}
     assert {"transcript updated", "transcript downloaded", "transcript deleted"} <= messages
+
+
+# --- #15 AC3 end-to-end: download == export ZIP entry ---------------------------------------
+
+
+@pytest.mark.parametrize("download_format", ["md", "txt"])
+async def test_download_is_byte_identical_to_export_zip_entry(
+    client: httpx2.AsyncClient, download_format: str
+) -> None:
+    project_id = await _project(client, "Clase de Física")
+    created = await _transcript(client, project_id, title="Óptica 1", language="es")
+
+    download = await client.get(
+        f"/api/transcriptions/{created['id']}/download", params={"format": download_format}
+    )
+    files = unzip((await client.get(f"/api/projects/{project_id}/export")).content)
+
+    assert files[f"clase-de-fisica/transcripts/optica-1.{download_format}"] == download.content

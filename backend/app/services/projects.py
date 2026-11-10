@@ -37,11 +37,11 @@ class ProjectContents:
     screenshots: list[Screenshot] = field(default_factory=list)
 
 
-def bump_updated_at(project: Project) -> None:
-    """Set `project.updated_at` to now, strictly later than before (coarse clocks on Windows)."""
-    previous = project.updated_at
+def bump_updated_at(row: Project | Transcript) -> None:
+    """Set `row.updated_at` to now, strictly later than before (coarse clocks on Windows)."""
+    previous = row.updated_at
     now = utcnow()
-    project.updated_at = (
+    row.updated_at = (
         now if previous is None or now > previous else previous + timedelta(microseconds=1)
     )
 
@@ -92,8 +92,10 @@ async def get_project_with_counts(
     return ProjectWithCounts(project, int(transcript_count), int(screenshot_count))
 
 
-async def get_project_contents(session: AsyncSession, project_id: uuid.UUID) -> ProjectContents:
-    """Transcript summaries (no `text`) and screenshot metadata (no image bytes), newest first."""
+async def list_transcript_summaries(
+    session: AsyncSession, project_id: uuid.UUID
+) -> list[Transcript]:
+    """Transcripts of a project without loading `text`, newest first."""
     transcripts = await session.scalars(
         select(Transcript)
         .options(
@@ -112,12 +114,18 @@ async def get_project_contents(session: AsyncSession, project_id: uuid.UUID) -> 
         .where(Transcript.project_id == project_id)
         .order_by(Transcript.created_at.desc(), Transcript.id.desc())
     )
+    return list(transcripts.all())
+
+
+async def get_project_contents(session: AsyncSession, project_id: uuid.UUID) -> ProjectContents:
+    """Transcript summaries (no `text`) and screenshot metadata (no image bytes), newest first."""
+    transcripts = await list_transcript_summaries(session, project_id)
     screenshots = await session.scalars(
         select(Screenshot)
         .where(Screenshot.project_id == project_id)
         .order_by(Screenshot.created_at.desc(), Screenshot.id.desc())
     )
-    return ProjectContents(list(transcripts.all()), list(screenshots.all()))
+    return ProjectContents(transcripts, list(screenshots.all()))
 
 
 async def create_project(session: AsyncSession, name: str) -> ProjectWithCounts:

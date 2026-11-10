@@ -4,9 +4,9 @@ import uuid
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
 
-from app.db.models import PROJECT_NAME_MAX
+from app.db.models import PROJECT_NAME_MAX, TRANSCRIPT_TITLE_MAX
 from app.db.models import Screenshot as ScreenshotRow
 
 ProjectName = Annotated[
@@ -49,6 +49,27 @@ class TranscriptSummary(BaseModel):
 class Transcript(TranscriptSummary):
     text: str
     source_filename: str | None
+
+
+TranscriptTitle = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=TRANSCRIPT_TITLE_MAX)
+]
+
+
+class TranscriptUpdate(BaseModel):
+    """PATCH body (US-08): `title` (trimmed, 1-200) and/or `text`; at least one, never null."""
+
+    title: TranscriptTitle | None = None
+    text: str | None = None
+
+    @model_validator(mode="after")
+    def _at_least_one_non_null_field(self) -> "TranscriptUpdate":
+        if not self.model_fields_set:
+            raise ValueError("Provide at least one of: title, text")
+        null_fields = sorted(f for f in self.model_fields_set if getattr(self, f) is None)
+        if null_fields:
+            raise ValueError(f"Fields must not be null: {', '.join(null_fields)}")
+        return self
 
 
 class Error(BaseModel):

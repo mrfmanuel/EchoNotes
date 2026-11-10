@@ -1,4 +1,4 @@
-"""Create a transcript from uploaded audio (US-05, US-07).
+"""Transcripts: create from audio (US-05, US-07), read, edit (US-08) and delete (US-11).
 
 Privacy (US-05 AC6, NFR-Privacy): the audio only lives in memory for the request, nothing
 but IDs, sizes, durations, status and provider names is logged.
@@ -14,12 +14,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import TRANSCRIPT_TITLE_MAX, Project, Transcript
 from app.errors import ApiError, NotFoundError
-from app.services.projects import PROJECT_NOT_FOUND, touch_project
+from app.services.projects import (
+    PROJECT_NOT_FOUND,
+    bump_updated_at,
+    list_transcript_summaries,
+    touch_project,
+)
 from app.services.slugs import slugify
 from app.services.uploads import basename, split_extension
 from app.transcription import ProviderError, ProviderTimeout, Transcriber
 
 TRANSCRIPT_SLUG_FALLBACK = "transcript"
+TRANSCRIPT_NOT_FOUND = "Transcript not found"
 UNTITLED = "Untitled"
 SOURCE_FILENAME_MAX = 255
 
@@ -124,3 +130,58 @@ async def create_transcript(
         },
     )
     return transcript
+
+
+async def list_transcripts(session: AsyncSession, project_id: uuid.UUID) -> list[Transcript]:
+    """Summaries (no `text`) of a project's transcripts, newest first; 404 if unknown."""
+    if await session.get(Project, project_id) is None:
+        raise NotFoundError(PROJECT_NOT_FOUND)
+    return await list_transcript_summaries(session, project_id)
+
+
+async def get_transcript(session: AsyncSession, transcript_id: uuid.UUID) -> Transcript:
+    transcript = await session.get(Transcript, transcript_id)
+    if transcript is None:
+        raise NotFoundError(TRANSCRIPT_NOT_FOUND)
+    return transcript
+
+
+async def update_transcript(
+    session: AsyncSession,
+    transcript_id: uuid.UUID,
+    title: str | None = None,
+    text: str | None = None,
+) -> Transcript:
+    """Edit the title (slug recomputed, US-10 AC5) and/or text; bump transcript and project."""
+    transcript = await get_transcript(session, transcript_id)
+    if title is not None:
+        transcript.title = title
+        transcript.slug = slugify(title, TRANSCRIPT_SLUG_FALLBACK)
+    if text is not None:
+        transcript.text = text
+    bump_updated_at(transcript)
+    await touch_project(session, transcript.project_id)
+    await session.commit()
+    logger.info(
+        "transcript updated",
+        extra={
+            "transcript_id": str(transcript_id),
+            "project_id": str(transcript.project_id),
+            "title_changed": title is not None,
+            "text_changed": text is not None,
+        },
+    )
+    return transcript
+
+
+async def delete_transcript(session: AsyncSession, transcript_id: uuid.UUID) -> None:
+    """Delete; the FK (`ON DELETE SET NULL`) unlinks its screenshots, which stay (US-11)."""
+    transcript = await get_transcript(session, transcript_id)
+    project_id = transcript.project_id
+    await session.delete(transcript)
+    await touch_project(session, project_id)
+    await session.commit()
+    logger.info(
+        "transcript deleted",
+        extra={"transcript_id": str(transcript_id), "project_id": str(project_id)},
+    )

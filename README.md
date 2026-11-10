@@ -61,7 +61,7 @@ In production, one Docker image serves both the API and the built SPA. Images ar
 | Way | Command | Status |
 |---|---|---|
 | Whole system (app + Postgres) | `docker compose up --build` (or `make up`) → <http://localhost:8000>; stop with `docker compose down` (keeps data) or `docker compose down -v` (wipes it). No `.env` needed: it uses the fake transcriber and a local Postgres. | ✅ available |
-| Backend only | `cd backend && uv sync && uv run alembic upgrade head && uv run uvicorn app.main:app --reload --port 8000` → <http://localhost:8000/api/health> (needs Postgres at `DATABASE_URL`; add `--env-file ../.env` after `uv run` to load `.env`) | ✅ available |
+| Backend only | `cd backend && uv sync && uv run alembic upgrade head && uv run uvicorn app.main:app --loop app.event_loop:new_event_loop --reload --port 8000` → <http://localhost:8000/api/health> (needs Postgres at `DATABASE_URL`; add `--env-file ../.env` after `uv run` to load `.env`). `--loop app.event_loop:new_event_loop` is required on native Windows (psycopg cannot use the default Proactor loop, see #41) and harmless elsewhere; `--reload` is optional. | ✅ available |
 | Frontend only (skeleton) | `cd frontend && npm ci && npm run dev` → <http://localhost:5173> | ✅ available |
 
 Transcription uses `TRANSCRIBER_PROVIDER=fake` by default. For real transcripts, set `TRANSCRIBER_PROVIDER=groq` and `GROQ_API_KEY` in `.env` (never commit it).
@@ -101,7 +101,7 @@ One command for backend unit + integration (throwaway Postgres on port 55432) + 
 | Agent team specification | [.claude/agents/](.claude/agents/) + [docs/agent-team.md](docs/agent-team.md); the workflow was used on the skeleton PR (QA report comment) | ✅ P1 |
 | Context management | [AGENTS.md](AGENTS.md) → modular docs ([process](docs/process.md), [agent team](docs/agent-team.md), [architecture](docs/architecture.md), …); [CLAUDE.md](CLAUDE.md) imports it | ✅ P1 |
 | Application | FastAPI + React + Postgres end to end | *planned P2* ([M2](https://github.com/mrfmanuel/EchoNotes/milestone/2)) |
-| Testing | Unit + integration tests with a single command ([docs/testing.md](docs/testing.md)) | skeleton tests ✅, full suite *planned P2* |
+| Testing | Unit + integration tests with a single command ([docs/testing.md](docs/testing.md)) | ✅ `make test` (backend unit + integration on Postgres, frontend) |
 | Containerization | `docker compose up --build` (app + DB) | *planned P2* ([#22](https://github.com/mrfmanuel/EchoNotes/issues/22)) |
 | Deployment | Render dev + prod public URLs ([docs/deployment.md](docs/deployment.md)) | *planned P3* |
 | CI/CD | [CI on every PR and push](.github/workflows/ci.yml) ✅; CD to dev, manual prod and rollback *planned P3* | CI ✅ P1 |

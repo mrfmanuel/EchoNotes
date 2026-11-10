@@ -46,7 +46,7 @@ prompts/            the prompts given to Claude Code (evidence of AI usage)
 ```bash
 # backend (from backend/)
 uv sync                         # install
-uv run uvicorn app.main:app --reload --port 8000
+uv run uvicorn app.main:app --loop app.event_loop:new_event_loop --reload --port 8000  # --loop: needed on Windows
 uv run ruff check . && uv run ruff format --check .
 uv run pytest
 

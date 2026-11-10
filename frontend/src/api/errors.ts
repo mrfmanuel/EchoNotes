@@ -35,3 +35,29 @@ export function genericErrorMessage(error: unknown): string {
   if (error.status === 422) return error.firstMessage
   return `Something went wrong (HTTP ${error.status}). Please try again.`
 }
+
+/** User-facing message for a failed project export (US-16, #21 AC2). */
+export function exportErrorMessage(error: unknown): string {
+  if (error instanceof ApiError && error.status === 404) {
+    return 'This project no longer exists, so it cannot be exported.'
+  }
+  if (error instanceof ApiError && error.status === NETWORK_ERROR_STATUS) {
+    return `The export failed: could not reach the server. ${RETRY_HINT}`
+  }
+  const status = error instanceof ApiError ? ` (HTTP ${error.status})` : ''
+  return `The export failed${status}. ${RETRY_HINT}`
+}
+
+/** User-facing message for a failed screenshot upload or link change (US-12 AC2, US-14 AC2). */
+export function screenshotErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 413) return 'The image is larger than 5 MB. Choose a smaller image.'
+    if (error.status === 415) {
+      return 'This image type is not supported. Use a PNG, JPEG or WebP image.'
+    }
+    if (error.status === 422) {
+      return `The screenshot was rejected: ${error.firstMessage}`
+    }
+  }
+  return genericErrorMessage(error)
+}

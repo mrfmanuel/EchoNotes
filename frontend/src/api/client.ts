@@ -71,8 +71,32 @@ export interface ApiClient {
   transcriptDownloadUrl(transcriptId: Uuid, format: DownloadFormat): string
   /** URL of `getScreenshotImage`, for `<img src>`. */
   screenshotImageUrl(screenshotId: Uuid): string
-  /** URL of `exportProject`, for `<a href download>`. */
+  /** URL of `exportProject`. */
   projectExportUrl(projectId: Uuid): string
+  /** `exportProject`: the ZIP as a Blob plus the filename from `Content-Disposition` (or null). */
+  exportProject(projectId: Uuid): Promise<ExportFile>
+}
+
+/** Result of `exportProject`. */
+export interface ExportFile {
+  blob: Blob
+  filename: string | null
+}
+
+/** Filename from a `Content-Disposition` header (`filename*=UTF-8''…` or `filename="…"`). */
+export function filenameFromDisposition(header: string | null): string | null {
+  if (!header) return null
+  const extended = /filename\*\s*=\s*(?:UTF-8|utf-8)''([^;]+)/.exec(header)
+  if (extended) {
+    try {
+      return decodeURIComponent(extended[1].trim())
+    } catch {
+      // Malformed encoding; fall back to the plain filename parameter.
+    }
+  }
+  const plain = /filename\s*=\s*"([^"]+)"|filename\s*=\s*([^;\s]+)/.exec(header)
+  const name = plain?.[1] ?? plain?.[2]
+  return name ? name.trim() : null
 }
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
@@ -100,7 +124,8 @@ async function parseErrorBody(response: Response): Promise<ErrorBody> {
 export function createApiClient(baseUrl = '', fetchImpl?: FetchLike): ApiClient {
   const doFetch: FetchLike = fetchImpl ?? ((input, init) => fetch(input, init))
 
-  async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  /** Sends the request and returns the accepted response, or throws `ApiError`. */
+  async function send(path: string, options: RequestOptions = {}): Promise<Response> {
     const init: RequestInit = { method: options.method ?? 'GET', headers: {} }
     if (options.json !== undefined) {
       init.headers = { 'Content-Type': 'application/json' }
@@ -121,8 +146,24 @@ export function createApiClient(baseUrl = '', fetchImpl?: FetchLike): ApiClient 
       const body = await parseErrorBody(response)
       throw new ApiError(response.status, body.detail, body.code)
     }
+    return response
+  }
+
+  async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+    const response = await send(path, options)
     if (response.status === 204) return undefined as T
     return (await response.json()) as T
+  }
+
+  async function exportProject(projectId: Uuid): Promise<ExportFile> {
+    const response = await send(`/api/projects/${enc(projectId)}/export`)
+    let blob: Blob
+    try {
+      blob = await response.blob()
+    } catch {
+      throw new ApiError(NETWORK_ERROR_STATUS, 'The download was interrupted.')
+    }
+    return { blob, filename: filenameFromDisposition(response.headers.get('Content-Disposition')) }
   }
 
   return {
@@ -178,5 +219,6 @@ export function createApiClient(baseUrl = '', fetchImpl?: FetchLike): ApiClient 
       `${baseUrl}/api/transcriptions/${enc(transcriptId)}/download?format=${format}`,
     screenshotImageUrl: (screenshotId) => `${baseUrl}/api/screenshots/${enc(screenshotId)}/image`,
     projectExportUrl: (projectId) => `${baseUrl}/api/projects/${enc(projectId)}/export`,
+    exportProject,
   }
 }

@@ -96,9 +96,9 @@ export interface ProjectDetail extends Project {
   screenshots: Screenshot[]
 }
 
-/** Request body of `updateScreenshot` (link or unlink). */
+/** Request body of `updateScreenshot` (link with an ID, unlink with `null`). */
 export interface ScreenshotUpdate {
-  transcript_id: Uuid | null
+  transcript_id?: Uuid | null
 }
 
 export type DownloadFormat = 'md' | 'txt'

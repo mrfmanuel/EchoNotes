@@ -45,12 +45,13 @@ describe('ProjectPage – content', () => {
     expect(await screen.findByText(/no transcripts yet/i)).toBeInTheDocument()
   })
 
-  it('keeps a placeholder section for the PR-G screenshot gallery and export', async () => {
+  it('renders the screenshots section (#project-screenshots) and the export section', async () => {
     client.getProject.mockResolvedValue(makeProjectDetail({ screenshots: [makeScreenshot()] }))
-    renderApp(PATH, client)
+    const { container } = renderApp(PATH, client)
 
-    expect(await screen.findByRole('heading', { name: 'Screenshots' })).toBeInTheDocument()
-    expect(screen.getByText(/1 screenshot in this project/)).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Screenshots (1)' })).toBeInTheDocument()
+    expect(container.querySelector('#project-screenshots')).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Export ZIP' })).toBeInTheDocument()
   })
 
   it('shows "Project not found" for a 404', async () => {

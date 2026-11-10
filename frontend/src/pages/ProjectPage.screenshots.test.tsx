@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import {
   apiError,
   createMockClient,
@@ -346,6 +346,20 @@ describe('Screenshots – gallery and delete (US-15)', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
+  it('US-15 AC1: closing the full image returns focus to the thumbnail that opened it', async () => {
+    const { user } = await renderLoaded()
+    const thumbnail = screen.getByRole('button', { name: 'Open b.png' })
+
+    await user.click(thumbnail)
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus()
+    await user.keyboard('{Escape}')
+    expect(thumbnail).toHaveFocus()
+
+    await user.click(thumbnail)
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    expect(thumbnail).toHaveFocus()
+  })
+
   it('US-15 AC2: deletes a screenshot after confirmation and removes it from the gallery', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     client.deleteScreenshot.mockResolvedValue(undefined)
@@ -384,20 +398,108 @@ describe('Screenshots – gallery and delete (US-15)', () => {
   })
 })
 
-describe('Export ZIP (US-16)', () => {
-  it('US-16 AC1: the Export ZIP link points at the export endpoint and downloads <slug>.zip', async () => {
-    await renderLoaded()
+describe('Export ZIP (US-16, #21)', () => {
+  let clicked: { href: string; download: string }[]
+  let createObjectURL: Mock<(blob: Blob) => string>
+  let revokeObjectURL: Mock<(url: string) => void>
 
-    const link = screen.getByRole('link', { name: 'Export ZIP' })
-    expect(link).toHaveAttribute('href', `/api/projects/${PROJECT_ID}/export`)
-    expect(link).toHaveAttribute('download', 'lecture-notes.zip')
+  beforeEach(() => {
+    clicked = []
+    createObjectURL = vi.fn(() => 'blob:export-1')
+    revokeObjectURL = vi.fn()
+    // jsdom has no object URLs and does not download; record what would be saved.
+    Object.assign(URL, { createObjectURL, revokeObjectURL })
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      clicked.push({ href: this.getAttribute('href') ?? '', download: this.download })
+    })
+  })
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void
+    const promise = new Promise<T>((res) => {
+      resolve = res
+    })
+    return { promise, resolve }
+  }
+
+  it('US-16 AC1: downloads the ZIP as <slug>.zip and revokes the object URL', async () => {
+    const blob = new Blob(['zip'], { type: 'application/zip' })
+    client.exportProject.mockResolvedValue({ blob, filename: null })
+    const { user } = await renderLoaded()
+
+    await user.click(screen.getByRole('button', { name: 'Export ZIP' }))
+
+    expect(client.exportProject).toHaveBeenCalledWith(PROJECT_ID)
+    await waitFor(() =>
+      expect(clicked).toEqual([{ href: 'blob:export-1', download: 'lecture-notes.zip' }]),
+    )
+    expect(createObjectURL).toHaveBeenCalledWith(blob)
+    await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith('blob:export-1'))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('US-16 AC1: uses the filename from Content-Disposition when the API sends one', async () => {
+    client.exportProject.mockResolvedValue({ blob: new Blob(['zip']), filename: 'server-name.zip' })
+    const { user } = await renderLoaded()
+
+    await user.click(screen.getByRole('button', { name: 'Export ZIP' }))
+
+    await waitFor(() => expect(clicked[0]?.download).toBe('server-name.zip'))
+  })
+
+  it('#21 AC2: shows a busy "Preparing…" state while the ZIP is generated', async () => {
+    const pending = deferred<{ blob: Blob; filename: string | null }>()
+    client.exportProject.mockReturnValue(pending.promise)
+    const { user } = await renderLoaded()
+
+    await user.click(screen.getByRole('button', { name: 'Export ZIP' }))
+
+    const busy = screen.getByRole('button', { name: /preparing/i })
+    expect(busy).toBeDisabled()
+    expect(busy).toHaveAttribute('aria-busy', 'true')
+    pending.resolve({ blob: new Blob(['zip']), filename: null })
+    expect(await screen.findByRole('button', { name: 'Export ZIP' })).toBeEnabled()
+  })
+
+  it('#21 AC2: shows an error alert with a retry hint on a 500 and re-enables the button', async () => {
+    client.exportProject.mockRejectedValue(apiError(500, 'Internal error'))
+    const { user } = await renderLoaded()
+
+    await user.click(screen.getByRole('button', { name: 'Export ZIP' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'The export failed (HTTP 500). Please try again in a moment.',
+    )
+    expect(screen.getByRole('button', { name: 'Export ZIP' })).toBeEnabled()
+    expect(clicked).toEqual([])
+  })
+
+  it('#21 AC2: shows an error alert on a network failure', async () => {
+    client.exportProject.mockRejectedValue(apiError(0, 'Could not reach the server.'))
+    const { user } = await renderLoaded()
+
+    await user.click(screen.getByRole('button', { name: 'Export ZIP' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not reach the server/i)
+    expect(screen.getByRole('button', { name: 'Export ZIP' })).toBeEnabled()
+  })
+
+  it('#21 AC2: explains a 404 (project deleted meanwhile)', async () => {
+    client.exportProject.mockRejectedValue(apiError(404, 'Project not found', 'not_found'))
+    const { user } = await renderLoaded()
+
+    await user.click(screen.getByRole('button', { name: 'Export ZIP' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/no longer exists/)
   })
 
   it('US-16 AC3: the export is offered for an empty project too', async () => {
     client.getProject.mockResolvedValue(makeProjectDetail())
     await renderLoaded()
 
-    expect(screen.getByRole('link', { name: 'Export ZIP' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Export ZIP' })).toBeEnabled()
     expect(screen.getByText(/0 transcripts and 0 screenshots/)).toBeInTheDocument()
   })
 })

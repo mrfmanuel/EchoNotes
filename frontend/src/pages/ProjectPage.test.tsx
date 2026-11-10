@@ -51,7 +51,7 @@ describe('ProjectPage – content', () => {
 
     expect(await screen.findByRole('heading', { name: 'Screenshots (1)' })).toBeInTheDocument()
     expect(container.querySelector('#project-screenshots')).not.toBeNull()
-    expect(screen.getByRole('link', { name: 'Export ZIP' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Export ZIP' })).toBeInTheDocument()
   })
 
   it('shows "Project not found" for a 404', async () => {

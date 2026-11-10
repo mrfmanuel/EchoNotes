@@ -50,8 +50,14 @@ interface ImageViewerProps {
 function ImageViewer({ screenshot, onClose }: ImageViewerProps) {
   const closeButton = useRef<HTMLButtonElement>(null)
 
+  // Move focus into the dialog and give it back to the opener (the thumbnail) on close.
   useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     closeButton.current?.focus()
+    return () => opener?.focus()
+  }, [])
+
+  useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
       if (event.key === 'Escape') onClose()
     }

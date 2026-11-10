@@ -3,6 +3,7 @@ import { ApiError } from '../api/client'
 import { useApi } from '../api/context'
 import { genericErrorMessage } from '../api/errors'
 import type { ProjectDetail, TranscriptSummary } from '../api/types'
+import { ExportButton } from '../components/ExportButton'
 import { ProjectHeader } from '../components/ProjectHeader'
 import { ScreenshotGallery } from '../components/ScreenshotGallery'
 import { LoadError, Loading, NotFound } from '../components/StatusViews'
@@ -100,13 +101,7 @@ export function ProjectPage() {
             {pluralize(project.screenshots.length, 'screenshot')} as one ZIP with a README index.
           </p>
         </div>
-        <a
-          className="btn btn-primary"
-          href={api.projectExportUrl(project.id)}
-          download={`${project.slug}.zip`}
-        >
-          Export ZIP
-        </a>
+        <ExportButton projectId={project.id} projectSlug={project.slug} />
       </section>
     </div>
   )

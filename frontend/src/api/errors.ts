@@ -36,6 +36,18 @@ export function genericErrorMessage(error: unknown): string {
   return `Something went wrong (HTTP ${error.status}). Please try again.`
 }
 
+/** User-facing message for a failed project export (US-16, #21 AC2). */
+export function exportErrorMessage(error: unknown): string {
+  if (error instanceof ApiError && error.status === 404) {
+    return 'This project no longer exists, so it cannot be exported.'
+  }
+  if (error instanceof ApiError && error.status === NETWORK_ERROR_STATUS) {
+    return `The export failed: could not reach the server. ${RETRY_HINT}`
+  }
+  const status = error instanceof ApiError ? ` (HTTP ${error.status})` : ''
+  return `The export failed${status}. ${RETRY_HINT}`
+}
+
 /** User-facing message for a failed screenshot upload or link change (US-12 AC2, US-14 AC2). */
 export function screenshotErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {

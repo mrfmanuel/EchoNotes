@@ -1,27 +1,23 @@
-const PLANNED_FEATURES = [
-  'Projects as folders',
-  'Upload or record audio and get a transcript',
-  'Edit, copy and download transcripts (.md / .txt)',
-  'Screenshots by file picker or Ctrl+V',
-  'Export a project as a ZIP',
-]
+import { useState } from 'react'
+import { createBrowserRouter, RouterProvider, type DataRouter } from 'react-router'
+import { ApiProvider } from './api/ApiProvider'
+import { createApiClient, type ApiClient } from './api/client'
+import { routes } from './routes'
 
-function App() {
+interface AppProps {
+  /** Defaults to the same-origin fetch client; tests pass a mock. */
+  client?: ApiClient
+  /** Defaults to a browser router; tests pass a memory router. */
+  router?: DataRouter
+}
+
+function App({ client, router }: AppProps) {
+  const [apiClient] = useState(() => client ?? createApiClient())
+  const [appRouter] = useState(() => router ?? createBrowserRouter(routes))
   return (
-    <main className="app">
-      <header>
-        <h1>EchoNotes</h1>
-        <p className="tagline">Turn audio into organized text notes.</p>
-      </header>
-      <section aria-labelledby="coming-soon">
-        <h2 id="coming-soon">Coming soon</h2>
-        <ul>
-          {PLANNED_FEATURES.map((feature) => (
-            <li key={feature}>{feature}</li>
-          ))}
-        </ul>
-      </section>
-    </main>
+    <ApiProvider client={apiClient}>
+      <RouterProvider router={appRouter} />
+    </ApiProvider>
   )
 }
 

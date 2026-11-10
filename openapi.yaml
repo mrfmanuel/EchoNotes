@@ -489,6 +489,7 @@ components:
     TranscriptUpdate:
       type: object
       minProperties: 1
+      description: At least one field. `null` values are rejected (422). The title is trimmed before validation; changing it recomputes the transcript slug.
       properties:
         title: { type: string, minLength: 1, maxLength: 200 }
         text: { type: string }

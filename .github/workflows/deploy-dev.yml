@@ -21,12 +21,6 @@ run-name: >-
   Deploy dev ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha
   || inputs.ref || 'main HEAD' }}
 
-# One dev deploy at a time; a running deploy is never cancelled (a newer one waits; GitHub keeps
-# only the newest pending run, so the latest main commit wins).
-concurrency:
-  group: deploy-dev
-  cancel-in-progress: false
-
 permissions:
   contents: read
 
@@ -41,6 +35,13 @@ jobs:
        github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # Job-level (not workflow-level) so runs whose job is skipped (CI failed/cancelled, PR CI)
+    # never join the group and displace a pending good deploy. One dev deploy at a time; a
+    # running deploy is never cancelled (GitHub keeps only the newest pending job, so the latest
+    # main commit wins). Same group as the dev job in rollback.yml.
+    concurrency:
+      group: deploy-dev
+      cancel-in-progress: false
     environment:
       name: development
       url: ${{ vars.DEV_URL }}

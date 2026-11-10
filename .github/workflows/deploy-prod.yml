@@ -21,6 +21,9 @@ on:
 run-name: Deploy prod ${{ inputs.ref || '(commit running on dev)' }}
 
 # One prod deploy (or prod rollback, see rollback.yml) at a time; never cancelled mid-deploy.
+# Workflow-level on purpose (dispatch only, every run is real): the resolve job reads
+# previous_commit only after any other prod deploy/rollback has finished. rollback.yml uses the
+# same group name at job level; groups are repository-wide, so they serialize.
 concurrency:
   group: deploy-prod
   cancel-in-progress: false

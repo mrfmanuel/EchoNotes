@@ -1,0 +1,20 @@
+# Throwaway Postgres for integration tests only (`make test`). Data lives in tmpfs and is
+# gone after `down -v`. Host port 55432 avoids clashing with a local Postgres on 5432.
+name: echonotes-test
+
+services:
+  testdb:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: echonotes_test
+      POSTGRES_PASSWORD: echonotes_test
+      POSTGRES_DB: echonotes_test
+    ports:
+      - "55432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U echonotes_test -d echonotes_test"]
+      interval: 1s
+      timeout: 3s
+      retries: 30

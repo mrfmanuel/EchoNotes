@@ -1,18 +1,23 @@
-import { render, screen } from '@testing-library/react'
+import { screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-import App from './App'
+import { createMockClient } from './test/mockClient'
+import { renderApp } from './test/renderApp'
 
-describe('App placeholder page', () => {
-  it('shows the product name and tagline', () => {
-    render(<App />)
+describe('App shell and routes', () => {
+  it('shows the brand header and the projects page at /', async () => {
+    const client = createMockClient()
+    client.listProjects.mockResolvedValue([])
 
-    expect(screen.getByRole('heading', { level: 1, name: 'EchoNotes' })).toBeInTheDocument()
+    renderApp('/', client)
+
+    expect(screen.getByRole('link', { name: /EchoNotes/ })).toHaveAttribute('href', '/')
     expect(screen.getByText('Turn audio into organized text notes.')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: 'Projects' })).toBeInTheDocument()
   })
 
-  it('lists the planned features', () => {
-    render(<App />)
+  it('shows a not-found page for unknown routes', () => {
+    renderApp('/nope')
 
-    expect(screen.getAllByRole('listitem')).toHaveLength(5)
+    expect(screen.getByRole('heading', { name: 'Page not found' })).toBeInTheDocument()
   })
 })

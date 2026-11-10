@@ -89,10 +89,10 @@ erDiagram
 
 ## Frontend (`frontend/`)
 
-- Vite + React 19 + TypeScript, React Router, plain CSS modules (no UI framework, to keep it small).
-- `src/api/client.ts` is a typed fetch wrapper that follows `openapi.yaml`.
-- Pages: `ProjectsPage`, `ProjectPage` (upload/record, transcript list, screenshot gallery and paste handler) and `TranscriptPage` (edit, copy, download).
-- Recording uses `MediaRecorder` (`audio/webm;codecs=opus` with a fallback to `audio/ogg`).
+- Vite + React 19 + TypeScript (strict), React Router v7 (data router, so `useBlocker` can warn about unsaved changes). No UI framework: one small CSS design system in `src/index.css` (CSS variables, light + dark via `prefers-color-scheme`, responsive down to 360px).
+- `src/api/types.ts` mirrors the `openapi.yaml` schemas. `src/api/client.ts` is a typed fetch wrapper for **every** operation (base URL `''`, so the SPA calls same-origin `/api`) and throws `ApiError { status, code, detail }`. Components get the client from `ApiProvider` / `useApi()` (`src/api/context.ts`), so tests inject a mock.
+- Routes (`src/routes.tsx`): `/` → `ProjectsPage` (list, create), `/projects/:projectId` → `ProjectPage` (rename/delete, upload/record with language hint, transcript list; screenshot gallery, paste handler and Export ZIP are added by #20/#21 in the marked section), `/transcripts/:transcriptId` → `TranscriptPage` (edit, copy, download `.md`/`.txt` via `<a href download>` to the API, delete, linked screenshots).
+- Recording uses `MediaRecorder` (`audio/webm;codecs=opus` with a fallback to `audio/ogg`) and uploads `recording-<timestamp>.webm|ogg`. Audio files are checked client-side (extension, 25 MB) before any request.
 
 ## Cross-cutting
 

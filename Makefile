@@ -27,8 +27,8 @@ lint: ## ruff check + format check, oxlint, tsc
 	cd backend && uv run ruff check . && uv run ruff format --check .
 	cd frontend && npm run lint && npm run typecheck
 
-up: ## Start the whole stack (docker-compose.yml arrives with #22)
-	docker compose up --build -d
+up: ## Build and start app + Postgres (http://localhost:8000), wait until healthy
+	docker compose up --build -d --wait
 
-down: ## Stop the whole stack
+down: ## Stop the whole stack (keeps the database volume; use `docker compose down -v` to wipe)
 	docker compose down

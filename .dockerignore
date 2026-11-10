@@ -1,0 +1,49 @@
+# Keep the build context small and secret-free (#22). The Dockerfile only copies
+# frontend/, backend/ and docker/ paths, but nothing below may even reach the daemon.
+
+# VCS, agents, docs, local tooling
+.git
+.github
+.claude
+course-reference
+prompts
+docs
+*.md
+Makefile
+docker-compose*.yml
+Dockerfile
+.dockerignore
+
+# Secrets / local env (only the example may be sent)
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+
+# Python
+**/.venv
+**/venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/.coverage
+**/htmlcov
+**/*.db
+**/*.sqlite3
+backend/tests
+
+# Node / frontend
+**/node_modules
+frontend/dist
+**/coverage
+**/*.tsbuildinfo
+**/npm-debug.log*
+
+# Editors / OS
+.vscode
+.idea
+**/.DS_Store
+**/Thumbs.db

@@ -12,9 +12,11 @@ it). In dev and tests it is unset and the app serves the API only.
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+
+from app.errors import NotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +50,7 @@ def mount_spa(app: FastAPI, static_dir: Path | None) -> bool:
     @app.api_route("/{full_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
     async def spa(full_path: str) -> FileResponse:
         if _is_api_path(full_path):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+            raise NotFoundError("Not Found")
         if full_path:
             candidate = (root / full_path).resolve()
             if candidate.is_relative_to(root) and candidate.is_file():

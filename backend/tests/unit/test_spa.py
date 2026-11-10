@@ -110,7 +110,7 @@ async def test_unknown_api_paths_return_json_404_not_index_html(
 
     assert response.status_code == 404
     assert response.headers["content-type"] == "application/json"
-    assert response.json() == {"detail": "Not Found"}
+    assert response.json() == {"detail": "Not Found", "code": "not_found"}
 
 
 async def test_api_routes_still_work_with_spa_mounted(spa_client: httpx2.AsyncClient) -> None:
@@ -118,6 +118,18 @@ async def test_api_routes_still_work_with_spa_mounted(spa_client: httpx2.AsyncCl
 
     assert response.status_code == 200
     assert response.json()["database"] == "ok"
+
+
+async def test_projects_api_is_not_shadowed_by_the_spa_catch_all(
+    spa_client: httpx2.AsyncClient,
+) -> None:
+    listed = await spa_client.get("/api/projects")
+    missing = await spa_client.get("/api/projects/3f1c2b9e-0000-4000-8000-000000000000")
+
+    assert listed.status_code == 200
+    assert listed.json() == []
+    assert missing.status_code == 404
+    assert missing.json()["code"] == "not_found"
 
 
 async def test_path_traversal_outside_static_dir_returns_index_html(

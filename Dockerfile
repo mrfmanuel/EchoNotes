@@ -32,9 +32,11 @@ COPY backend/pyproject.toml backend/uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project
 # The app itself, installed as a regular (non-editable) package so importlib.metadata works.
+# --no-cache: uv keys its built-wheel cache for a local project on pyproject.toml only, so a
+# shared cache mount would reinstall a stale wheel after source-only changes. Dependencies are
+# already in the venv, so this step only builds and installs the small app wheel.
 COPY backend/app ./app
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-editable
+RUN uv sync --frozen --no-dev --no-editable --no-cache
 
 # --- 3. Runtime --------------------------------------------------------------------------
 FROM ${PYTHON_IMAGE} AS runtime

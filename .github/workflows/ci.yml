@@ -129,6 +129,9 @@ jobs:
           curl -fsS http://localhost:8000/projects/does-not-matter | grep -q '<div id="root">'
           code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/api/does-not-exist)
           test "$code" = "404"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+            -d '{"name":"CI smoke"}' http://localhost:8000/api/projects)
+          test "$code" = "201"
 
       - name: Compose logs on failure
         if: failure()

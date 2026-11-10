@@ -1,6 +1,6 @@
 # Architecture
 
-> Status: target architecture agreed in M1. The skeleton (health endpoint and placeholder page) exists. Features arrive in M2.
+> Status: implemented in M2 (P2). Deployment (Render) is planned for M3 and OpenTelemetry for M4.
 
 ## Overview
 
@@ -17,9 +17,38 @@ flowchart LR
 - **One container in production.** The Docker image builds the React app (`frontend/dist`). FastAPI serves it as static files and falls back to `index.html` for client routes. `/api/*` is the API. No CORS is needed in prod.
 - **Local development.** `docker compose up --build` starts the app and Postgres. For frontend work, `npm run dev` (Vite on :5173) proxies `/api` to uvicorn on :8000.
 
+## Request flow (upload → transcript → export)
+
+```mermaid
+sequenceDiagram
+    participant FE as React SPA
+    participant MW as RequestContextMiddleware
+    participant R as Router (app/api)
+    participant S as Services (app/services)
+    participant T as Transcriber (groq | fake)
+    participant DB as Postgres
+    FE->>MW: POST /api/projects/{id}/transcriptions
+    MW->>MW: X-Request-ID (echo or uuid4) to contextvar for JSON logs
+    MW->>R: request
+    R->>DB: project exists? (404), session closed before the provider call
+    R->>S: validate type (415), read with size cap (413), empty (422)
+    S->>T: transcribe(bytes, filename, content_type, language)
+    T-->>S: TranscriptionResult or ProviderError (502) / ProviderTimeout (504)
+    S->>DB: INSERT transcript + bump project.updated_at (one transaction)
+    S-->>R: Transcript (audio buffer dropped in finally)
+    R-->>MW: 201 JSON
+    MW-->>FE: + X-Request-ID, one access log line (route template, status, duration)
+    FE->>R: GET /api/projects/{id}/export
+    R->>S: plan paths (pure), write ZIP to a SpooledTemporaryFile
+    S->>DB: transcripts, then one screenshot's bytes at a time
+    R-->>FE: StreamingResponse application/zip (temp file closed at the end)
+```
+
+Every other request takes the same middleware → router → service → DB path. Errors become `{"detail", "code"}` in `app/errors.py`. In the Docker image, any non-`/api` GET that is not a static asset returns `index.html` (`app/spa.py`, registered last).
+
 ## Backend (`backend/`)
 
-| Layer | Module (planned) | Responsibility |
+| Layer | Module | Responsibility |
 |---|---|---|
 | API | `app/api/*.py` | FastAPI routers, request validation, HTTP errors |
 | Services | `app/services/*.py` | Business rules: slugs, upload validation, export building |

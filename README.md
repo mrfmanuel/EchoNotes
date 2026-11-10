@@ -6,7 +6,7 @@
 
 Final project for the [AI Dev Tools Zoomcamp 2026](https://courses.datatalks.club/ai-dev-tools-2026/). Built with a team of AI agents (Claude Code subagents) working through a [public issue tracker](https://github.com/mrfmanuel/EchoNotes/issues).
 
-> **Status (end of prompt P1 — foundation):** the spec, API contract, tracker, agent team, context docs, a runnable skeleton (`/api/health` and a placeholder page) and CI are done. The app features arrive in **P2**, deployment in **P3** and observability/on-call in **P4**. Items not built yet are marked *planned* below.
+> **Status (end of prompt P2 — app):** the full application works end to end: projects, upload/record → transcript (Groq Whisper or a fake provider), edit/copy/download, screenshots (picker + Ctrl+V), ZIP export. It runs with **one command** (`docker compose up --build`), has **unit + integration + frontend tests behind one command** (`make test`) and CI on every PR. Deployment arrives in **P3** and observability/on-call in **P4**; those items are marked *planned* below.
 
 ---
 
@@ -43,6 +43,16 @@ See the personas in the [product spec](docs/product-spec.md#2-personas).
 
 Full acceptance criteria (Given/When/Then): [docs/product-spec.md](docs/product-spec.md). API contract: [openapi.yaml](openapi.yaml).
 
+## Screenshots
+
+| Projects | Project page |
+|---|---|
+| ![Projects list](docs/images/01-projects.png) | ![Project page with upload, transcripts, screenshot gallery and export](docs/images/02-project.png) |
+| **Transcript editor** | **Mobile (390 px)** |
+| ![Transcript editor with copy and downloads](docs/images/03-transcript.png) | ![Project page on a phone-sized screen](docs/images/04-project-mobile.png) |
+
+The transcript shown was produced by the real Groq provider from a synthesized speech clip during the P2 verification.
+
 ## Architecture (short)
 
 ```mermaid
@@ -54,6 +64,23 @@ flowchart LR
     T -->|fake| F[Deterministic fake]
 ```
 
+```mermaid
+sequenceDiagram
+    participant FE as React SPA
+    participant API as FastAPI (/api)
+    participant T as Transcriber
+    participant DB as Postgres
+    FE->>API: POST /api/projects/{id}/transcriptions (multipart)
+    API->>API: X-Request-ID, type check (415), size cap (413)
+    API->>T: transcribe(bytes, language)
+    T-->>API: text, language, duration (502/504 on failure, nothing stored)
+    API->>DB: INSERT transcript, bump project.updated_at
+    API-->>FE: 201 Transcript (audio discarded)
+    FE->>API: GET /api/projects/{id}/export
+    API->>DB: SELECT transcripts + screenshots
+    API-->>FE: application/zip (streamed, never persisted)
+```
+
 In production, one Docker image serves both the API and the built SPA. Images are stored in Postgres because the hosting disk (Render) is ephemeral. Details: [docs/architecture.md](docs/architecture.md).
 
 ## Run locally
@@ -62,7 +89,8 @@ In production, one Docker image serves both the API and the built SPA. Images ar
 |---|---|---|
 | Whole system (app + Postgres) | `docker compose up --build` (or `make up`) → <http://localhost:8000>; stop with `docker compose down` (keeps data) or `docker compose down -v` (wipes it). No `.env` needed: it uses the fake transcriber and a local Postgres. | ✅ available |
 | Backend only | `cd backend && uv sync && uv run alembic upgrade head && uv run uvicorn app.main:app --loop app.event_loop:new_event_loop --reload --port 8000` → <http://localhost:8000/api/health> (needs Postgres at `DATABASE_URL`; add `--env-file ../.env` after `uv run` to load `.env`). `--loop app.event_loop:new_event_loop` is required on native Windows (psycopg cannot use the default Proactor loop, see #41) and harmless elsewhere; `--reload` is optional. | ✅ available |
-| Frontend only (skeleton) | `cd frontend && npm ci && npm run dev` → <http://localhost:5173> | ✅ available |
+| Frontend dev server | `cd frontend && npm ci && npm run dev` → <http://localhost:5173> (proxies `/api` to the backend on :8000) | ✅ available |
+| Smoke test of a running stack | `make smoke` or `bash scripts/smoke.sh http://localhost:8000` (health → project → upload → transcript → screenshot → export ZIP → cleanup) | ✅ available |
 
 Transcription uses `TRANSCRIBER_PROVIDER=fake` by default. For real transcripts, set `TRANSCRIBER_PROVIDER=groq` and `GROQ_API_KEY` in `.env` (never commit it).
 
@@ -85,7 +113,7 @@ One command for backend unit + integration (throwaway Postgres on port 55432) + 
 | [docs/agent-team.md](docs/agent-team.md) | Agent roles, hand-offs, workflow diagram |
 | [docs/process.md](docs/process.md) | Issues, labels, branches, commits, PRs, definition of done |
 | [docs/architecture.md](docs/architecture.md) | Components, data model, Transcriber interface |
-| [docs/testing.md](docs/testing.md) | Test pyramid and commands |
+| [docs/testing.md](docs/testing.md) | Test pyramid, suites, counts and commands |
 | [docs/deployment.md](docs/deployment.md) | Environments and Render (*planned P3*) |
 | [docs/release-process.md](docs/release-process.md) | Dev → prod promotion and rollback (*planned P3*) |
 | [docs/observability.md](docs/observability.md) | Telemetry, alerts, on-call (*planned P4*) and privacy rules |
@@ -98,13 +126,13 @@ One command for backend unit + integration (throwaway Postgres on port 55432) + 
 |---|---|---|
 | Problem description | This README: [problem](#the-problem), [functionality](#functionality), [expected behavior](#expected-behavior) | ✅ P1 |
 | Product specification | [docs/product-spec.md](docs/product-spec.md) + [openapi.yaml](openapi.yaml); public tracker: [Issues](https://github.com/mrfmanuel/EchoNotes/issues), [Milestones](https://github.com/mrfmanuel/EchoNotes/milestones), [Project board](https://github.com/users/mrfmanuel/projects/2). Every issue has an AC checklist; closed issues carry evidence comments and PR links | ✅ P1 |
-| Agent team specification | [.claude/agents/](.claude/agents/) + [docs/agent-team.md](docs/agent-team.md); the workflow was used on the skeleton PR (QA report comment) | ✅ P1 |
+| Agent team specification | [.claude/agents/](.claude/agents/) + [docs/agent-team.md](docs/agent-team.md); in P2 every PR (#36–#46) went PM grooming → software-engineer/devops-sre → qa-engineer report → merge ([AI usage report](docs/ai-usage-report.md#p2--build-the-app-2026-11-10)) | ✅ P1–P2 |
 | Context management | [AGENTS.md](AGENTS.md) → modular docs ([process](docs/process.md), [agent team](docs/agent-team.md), [architecture](docs/architecture.md), …); [CLAUDE.md](CLAUDE.md) imports it | ✅ P1 |
-| Application | FastAPI + React + Postgres end to end | *planned P2* ([M2](https://github.com/mrfmanuel/EchoNotes/milestone/2)) |
-| Testing | Unit + integration tests with a single command ([docs/testing.md](docs/testing.md)) | ✅ `make test` (backend unit + integration on Postgres, frontend) |
-| Containerization | `docker compose up --build` (app + DB) | *planned P2* ([#22](https://github.com/mrfmanuel/EchoNotes/issues/22)) |
+| Application | FastAPI + React SPA + Postgres end to end; the frontend calls a typed `/api` client, data persists in Postgres; `docker compose up --build` → <http://localhost:8000> ([M2](https://github.com/mrfmanuel/EchoNotes/milestone/2), [screenshots](#screenshots)) | ✅ P2 |
+| Testing | 387 backend unit + 38 integration (real Postgres) + 129 frontend tests, contract test vs `openapi.yaml`, privacy log test, smoke script; **one command: `make test`**; all run in CI ([docs/testing.md](docs/testing.md)) | ✅ P2 |
+| Containerization | Multi-stage [Dockerfile](Dockerfile) (SPA + API in one non-root image, migrations on start, HEALTHCHECK) + [docker-compose.yml](docker-compose.yml) with Postgres 16; one command, no `.env` needed; CI builds the image and smoke-tests it ([#22](https://github.com/mrfmanuel/EchoNotes/issues/22)) | ✅ P2 |
 | Deployment | Render dev + prod public URLs ([docs/deployment.md](docs/deployment.md)) | *planned P3* |
-| CI/CD | [CI on every PR and push](.github/workflows/ci.yml) ✅; CD to dev, manual prod and rollback *planned P3* | CI ✅ P1 |
+| CI/CD | [CI on every PR and push](.github/workflows/ci.yml): lint, typecheck, unit + integration (Postgres service), frontend, Docker build + compose smoke ✅; CD to dev, manual prod and rollback *planned P3* | CI ✅ P1–P2 |
 | Observability | OpenTelemetry traces, metrics and logs sharing a trace ID, viewable in a UI ([docs/observability.md](docs/observability.md)) | *planned P4* |
 | Alerting on user impact | Transcription failure-rate alert with runbook | *planned P4* ([#31](https://github.com/mrfmanuel/EchoNotes/issues/31)) |
 | On-call agent | Alert → responder agent → incident issue and fix PR | *planned P4* ([#32](https://github.com/mrfmanuel/EchoNotes/issues/32)) |

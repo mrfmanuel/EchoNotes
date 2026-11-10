@@ -43,3 +43,23 @@ export function validateAudioFile(file: File): string | null {
   }
   return null
 }
+
+/** 5 MB with MB = 1024² bytes (docs/product-spec.md §3.4.1). */
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+export const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp'] as const
+const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp']
+export const IMAGE_ACCEPT = [...IMAGE_TYPES, '.png', '.jpg', '.jpeg', '.webp'].join(',')
+
+/**
+ * Returns an error message, or null when the image may be uploaded as a screenshot (US-12).
+ * Uses the browser's MIME type, or the extension when the browser did not report one; the API
+ * checks the magic bytes anyway.
+ */
+export function validateImageFile(file: File): string | null {
+  const supported = file.type
+    ? (IMAGE_TYPES as readonly string[]).includes(file.type)
+    : IMAGE_EXTENSIONS.includes(extensionOf(file.name))
+  if (!supported) return 'This image type is not supported. Use a PNG, JPEG or WebP image.'
+  if (file.size > MAX_IMAGE_BYTES) return 'The image is larger than 5 MB. Choose a smaller image.'
+  return null
+}

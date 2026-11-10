@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ApiError, createApiClient } from './client'
+import { ApiError, createApiClient, filenameFromDisposition } from './client'
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -112,6 +112,51 @@ describe('API client (follows openapi.yaml)', () => {
     expect(client.transcriptDownloadUrl('t1', 'txt')).toBe('/api/transcriptions/t1/download?format=txt')
     expect(client.screenshotImageUrl('s1')).toBe('/api/screenshots/s1/image')
     expect(client.projectExportUrl('p1')).toBe('/api/projects/p1/export')
+  })
+
+  it('exportProject GETs the export and returns the Blob and the Content-Disposition filename', async () => {
+    const response = new Response('PK-zip-bytes', {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/zip',
+        'Content-Disposition': 'attachment; filename="lecture-notes.zip"',
+      },
+    })
+    const { client, fetchMock } = setup(response)
+
+    const result = await client.exportProject('p1')
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/projects/p1/export')
+    expect(fetchMock.mock.calls[0][1]?.method).toBe('GET')
+    expect(result.filename).toBe('lecture-notes.zip')
+    expect(await result.blob.text()).toBe('PK-zip-bytes')
+  })
+
+  it('exportProject returns a null filename without Content-Disposition', async () => {
+    const { client } = setup(new Response('zip', { status: 200 }))
+
+    await expect(client.exportProject('p1')).resolves.toMatchObject({ filename: null })
+  })
+
+  it('exportProject throws ApiError on 404 and on a network failure', async () => {
+    const notFound = setup(jsonResponse(404, { detail: 'Project not found', code: 'not_found' }))
+    await expect(notFound.client.exportProject('p1')).rejects.toMatchObject({
+      status: 404,
+      code: 'not_found',
+    })
+
+    const offline = setup(new TypeError('Failed to fetch'))
+    await expect(offline.client.exportProject('p1')).rejects.toMatchObject({ status: 0 })
+  })
+
+  it('filenameFromDisposition reads filename*= and filename=', () => {
+    expect(filenameFromDisposition(null)).toBeNull()
+    expect(filenameFromDisposition('attachment')).toBeNull()
+    expect(filenameFromDisposition('attachment; filename=a.zip')).toBe('a.zip')
+    expect(filenameFromDisposition('attachment; filename="b c.zip"')).toBe('b c.zip')
+    expect(
+      filenameFromDisposition(`attachment; filename="x.zip"; filename*=UTF-8''caf%C3%A9.zip`),
+    ).toBe('café.zip')
   })
 
   it('getHealth returns the body of a 503 (database down)', async () => {

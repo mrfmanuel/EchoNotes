@@ -511,6 +511,127 @@ input[aria-invalid='true'] {
   border: 1px solid var(--color-border);
 }
 
+/* ---------- Screenshots ---------- */
+
+.screenshots {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.shot-grid {
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+}
+
+.shot-card {
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.thumb-button {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: var(--color-surface-muted);
+  cursor: zoom-in;
+}
+
+.thumb-button img {
+  border: 0;
+  border-radius: 0;
+}
+
+.shot-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) var(--space-3);
+}
+
+.shot-body select {
+  width: 100%;
+  min-width: 0;
+}
+
+.shot-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.btn-small {
+  min-height: 32px;
+  padding: var(--space-1) var(--space-3);
+  font-size: 0.85rem;
+}
+
+.viewer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  background: rgb(0 0 0 / 70%);
+}
+
+.viewer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: min(1100px, 100%);
+  max-height: 100%;
+  padding: var(--space-3);
+  background: var(--color-surface);
+  border-radius: var(--radius-lg);
+}
+
+.viewer-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.viewer-image {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100vh - 160px);
+  object-fit: contain;
+  margin: 0 auto;
+}
+
+.export-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.export-bar h2 {
+  margin-bottom: var(--space-1);
+}
+
+.export-action {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+
+.export-action .alert {
+  margin: 0;
+}
+
 /* ---------- Recorder ---------- */
 
 .recorder {
@@ -565,5 +686,14 @@ input[aria-invalid='true'] {
 
   .btn {
     white-space: normal;
+  }
+
+  .shot-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  }
+
+  .export-action {
+    flex: 1 1 100%;
+    align-items: stretch;
   }
 }

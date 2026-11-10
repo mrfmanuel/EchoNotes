@@ -30,6 +30,7 @@ export function createMockClient(): MockApiClient {
     uploadScreenshot: notMocked('uploadScreenshot'),
     updateScreenshot: notMocked('updateScreenshot'),
     deleteScreenshot: notMocked('deleteScreenshot'),
+    exportProject: notMocked('exportProject'),
     transcriptDownloadUrl: real.transcriptDownloadUrl,
     screenshotImageUrl: real.screenshotImageUrl,
     projectExportUrl: real.projectExportUrl,

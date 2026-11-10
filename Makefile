@@ -4,9 +4,10 @@ SHELL := bash
 .DEFAULT_GOAL := help
 
 TEST_COMPOSE := docker compose -f docker-compose.test.yml
+SMOKE_URL ?= http://localhost:8000
 TEST_DATABASE_URL ?= postgresql+psycopg://echonotes_test:echonotes_test@localhost:55432/echonotes_test
 
-.PHONY: help test test-unit test-backend test-frontend lint up down testdb-up testdb-down
+.PHONY: help test test-unit test-backend test-frontend lint up down smoke testdb-up testdb-down
 
 help: ## Show the available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -32,3 +33,6 @@ up: ## Build and start app + Postgres (http://localhost:8000), wait until health
 
 down: ## Stop the whole stack (keeps the database volume; use `docker compose down -v` to wipe)
 	docker compose down
+
+smoke: ## End-to-end smoke test of the key journey against SMOKE_URL (default http://localhost:8000)
+	bash scripts/smoke.sh '$(SMOKE_URL)'

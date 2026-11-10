@@ -9,7 +9,7 @@
 | Backend unit | `pytest`, SQLite in-memory, `FakeTranscriber` | Services, slugging, validation, export builder, transcriber factory, Groq client with mocked HTTP (`respx`) | every PR |
 | Backend integration | `pytest -m integration` + real Postgres 16 (service container in CI, `docker-compose.test.yml` locally) + `httpx2.AsyncClient` | Migrations, API endpoints end to end with persistence, cascades and ZIP structure | every PR |
 | Frontend unit/component | Vitest + Testing Library + jsdom | Components and pages with a mocked API client | every PR |
-| End-to-end smoke (optional) | Playwright or `curl` script against `docker compose` | Key journey: create project → upload → transcript → export | planned M2/M3 |
+| End-to-end smoke | `scripts/smoke.sh` (bash + curl + Python 3) against a running stack | Key journey: health → SPA → create project → upload audio → transcript → screenshot → export ZIP → delete | every PR (CI `docker` job, compose stack); after every deploy (M3) |
 
 ## Commands
 
@@ -32,6 +32,34 @@ TEST_DATABASE_URL=postgresql+psycopg://echonotes_test:echonotes_test@localhost:5
 cd frontend
 npm test                   # vitest run
 ```
+
+## End-to-end smoke test (`scripts/smoke.sh`, #24)
+
+```bash
+make up && make smoke                          # compose stack on http://localhost:8000
+scripts/smoke.sh http://localhost:8000         # same thing, any base URL
+make smoke SMOKE_URL=https://<dev-or-prod-url> # post-deploy check (M3)
+```
+
+- **Needs:** bash, `curl` and Python 3 (`python3`, or `python` when `python3` is missing or is the Windows Store stub). Works on Linux CI and Git Bash on Windows. No binary fixtures: the script generates a 1 s silent WAV and a 4x4 PNG in a `mktemp -d` directory that a `trap` removes on exit.
+- **Steps** (one `PASS`/`FAIL` line each, with HTTP status and timing; exits non-zero at the first failure, `2` without an argument):
+  1. `GET /api/health` → 200 and `database: ok`, retried every 3 s until `SMOKE_HEALTH_TIMEOUT` (cold starts).
+  2. `GET /` and a client route → 200 `index.html`; `GET /api/<unknown>` → 404.
+  3. `POST /api/projects` with a unique name `smoke-<UTC timestamp>-<pid>` → 201.
+  4. `POST /api/projects/{id}/transcriptions` with the WAV → 201 (prints provider and duration only).
+  5. `GET /api/transcriptions/{id}` → 200; `text` must be non-empty (prints its length only).
+  6. `POST /api/projects/{id}/screenshots` with the PNG and `transcript_id` → 201, linked.
+  7. `GET /api/projects/{id}/export` → 200 `application/zip`; Python `zipfile.testzip()` passes and the tree has `<slug>/README.md`, `<slug>/transcripts/*.md`, `<slug>/transcripts/*.txt` and `<slug>/screenshots/01-*.png`.
+  8. `DELETE /api/projects/{id}` → 204. If an earlier step fails, the `EXIT` trap still deletes the project, so dev/prod stay clean.
+- **Privacy:** prints only status codes, IDs, sizes, counts and timings, never response bodies, transcript text or secrets (`user:pass@` in the URL is masked).
+
+| Variable | Default | Effect |
+|---|---|---|
+| `SMOKE_HEALTH_TIMEOUT` | `90` | Seconds to keep retrying `/api/health` |
+| `SMOKE_REQUEST_TIMEOUT` | `120` | Max seconds per request (the upload waits for the provider) |
+| `SMOKE_ALLOW_EMPTY_TEXT` | unset | `1` accepts an empty transcript (real Groq may return nothing for silent audio) |
+| `SMOKE_SKIP_SPA` | unset | `1` skips the SPA checks (API-only server, e.g. `uvicorn` without `STATIC_DIR`) |
+| `SMOKE_KEEP` | unset | `1` keeps the smoke project for debugging (no delete) |
 
 ## Backend layout and fixtures
 

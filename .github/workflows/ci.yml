@@ -121,17 +121,10 @@ jobs:
       - name: Boot app + Postgres with compose (no .env, fake transcriber)
         run: docker compose up -d --no-build --wait --wait-timeout 120
 
-      - name: Smoke test (health, SPA, client route, API 404)
-        run: |
-          set -euo pipefail
-          curl -fsS http://localhost:8000/api/health | tee /dev/stderr | grep -q '"database":"ok"'
-          curl -fsS http://localhost:8000/ | grep -q '<div id="root">'
-          curl -fsS http://localhost:8000/projects/does-not-matter | grep -q '<div id="root">'
-          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/api/does-not-exist)
-          test "$code" = "404"
-          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
-            -d '{"name":"CI smoke"}' http://localhost:8000/api/projects)
-          test "$code" = "201"
+      # Key journey (#24): health, SPA, project -> audio -> transcript -> screenshot -> ZIP,
+      # then deletes the project. Fake transcriber, never Groq.
+      - name: Smoke test (scripts/smoke.sh)
+        run: scripts/smoke.sh http://localhost:8000
 
       - name: Compose logs on failure
         if: failure()

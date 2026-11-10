@@ -43,6 +43,20 @@ docs/product-spec.md#us-xx
 - Short-lived branches. Rebase on `main` before opening the PR if it moved.
 - **Exception:** docs-only changes may be committed directly to `main` by the tech lead, with `Refs #N` in the commit message.
 
+### Branch protection on `main` (since M3, #48)
+
+Applied with `gh api -X PUT repos/mrfmanuel/EchoNotes/branches/main/protection`:
+
+| Setting | Value |
+|---|---|
+| Required status checks (PRs cannot merge until they pass) | `Backend (ruff + pytest unit + integration)`, `Frontend (lint + typecheck + test + build)`, `Docker (build image + boot with compose + smoke test)` |
+| Require branch up to date (`strict`) | off (squash-merge after a green run is enough; avoids needless re-runs) |
+| Enforce for admins | **off**, so the tech lead can push the docs-only commits allowed above. GitHub reports these pushes as "Bypassed rule violations" |
+| Force pushes / branch deletion | blocked |
+| Required PR reviews | none (the QA gate is the `qa-engineer` report, see §4) |
+
+Every push to `main` still runs CI, and a green CI run on `main` triggers the automatic deploy to dev ([release-process.md](release-process.md)). A docs-only push therefore also redeploys dev.
+
 ## 3. Commits
 
 [Conventional Commits](https://www.conventionalcommits.org/) with the issue reference:

@@ -61,7 +61,7 @@ In production, one Docker image serves both the API and the built SPA. Images ar
 | Way | Command | Status |
 |---|---|---|
 | Whole system (app + Postgres) | `cp .env.example .env && docker compose up --build` → <http://localhost:8000> | *planned in P2* ([#22](https://github.com/mrfmanuel/EchoNotes/issues/22)) |
-| Backend only (skeleton) | `cd backend && uv sync && uv run uvicorn app.main:app --reload --port 8000` → <http://localhost:8000/api/health> | ✅ available |
+| Backend only | `cd backend && uv sync && uv run alembic upgrade head && uv run uvicorn app.main:app --reload --port 8000` → <http://localhost:8000/api/health> (needs Postgres at `DATABASE_URL`; add `--env-file ../.env` after `uv run` to load `.env`) | ✅ available |
 | Frontend only (skeleton) | `cd frontend && npm ci && npm run dev` → <http://localhost:5173> | ✅ available |
 
 Transcription uses `TRANSCRIBER_PROVIDER=fake` by default. For real transcripts, set `TRANSCRIBER_PROVIDER=groq` and `GROQ_API_KEY` in `.env` (never commit it).
@@ -73,7 +73,7 @@ cd backend  && uv run ruff check . && uv run pytest          # backend lint + te
 cd frontend && npm run lint && npm run typecheck && npm test  # frontend lint + types + tests
 ```
 
-One command for unit + integration tests: *planned in P2* ([#23](https://github.com/mrfmanuel/EchoNotes/issues/23)). CI runs all of the above on every pull request and on every push to `main` ([ci.yml](.github/workflows/ci.yml)).
+One command for backend unit + integration (throwaway Postgres on port 55432) + frontend tests: `make test`. Without Docker: `make test-unit`. Lint everything: `make lint`. See [docs/testing.md](docs/testing.md). CI runs all of the above on every pull request and on every push to `main` ([ci.yml](.github/workflows/ci.yml)).
 
 ## Documentation
 

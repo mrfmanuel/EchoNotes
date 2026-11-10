@@ -24,8 +24,11 @@ flowchart LR
 | API | `app/api/*.py` | FastAPI routers, request validation, HTTP errors |
 | Services | `app/services/*.py` | Business rules: slugs, upload validation, export building |
 | Transcription | `app/transcription/` | `Transcriber` protocol, `GroqTranscriber`, `FakeTranscriber`, factory chosen by `TRANSCRIBER_PROVIDER` |
-| Persistence | `app/db/` | SQLAlchemy 2 models, session, Alembic migrations |
-| Settings | `app/config.py` | `pydantic-settings`, reads env vars (see `.env.example`) |
+| Persistence | `app/db/` (+ `alembic/`) | Async SQLAlchemy 2 models and session (`get_session` dependency), psycopg 3 driver; Alembic migrations in `backend/alembic/` |
+| Settings | `app/config.py` | `pydantic-settings`, reads process env vars only (see `.env.example`); `DATABASE_URL` `postgres://`/`postgresql://` is normalized to `postgresql+psycopg://` |
+| Logging | `app/logging.py`, `app/middleware.py` | JSON logs, `X-Request-ID` middleware, one access line per request (see [observability.md](observability.md#logging-m2)) |
+
+The backend version lives only in `backend/pyproject.toml`; `app/__init__.py` reads it with `importlib.metadata`.
 
 ### Transcriber interface
 

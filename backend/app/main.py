@@ -1,25 +1,29 @@
-from typing import Literal
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from pydantic import BaseModel
 
 from app import __version__
+from app.api import health
+from app.config import get_settings
+from app.db.session import dispose_engine
+from app.logging import configure_logging
+from app.middleware import RequestContextMiddleware
 
 
-class Health(BaseModel):
-    status: Literal["ok", "degraded"]
-    version: str
-    database: Literal["ok", "error", "skipped"]
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    yield
+    await dispose_engine()
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="EchoNotes API", version=__version__)
+    settings = get_settings()  # fails fast on invalid configuration
+    configure_logging(settings.log_level)
 
-    @app.get("/api/health", response_model=Health, tags=["health"])
-    async def health() -> Health:
-        # The database check arrives with the persistence layer (issue #16).
-        return Health(status="ok", version=__version__, database="skipped")
-
+    app = FastAPI(title="EchoNotes API", version=__version__, lifespan=lifespan)
+    app.add_middleware(RequestContextMiddleware)
+    app.include_router(health.router)
     return app
 
 

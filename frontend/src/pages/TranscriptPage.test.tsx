@@ -26,6 +26,8 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers()
   vi.restoreAllMocks()
+  // The copy tests define navigator.clipboard; remove it so later tests see jsdom's default.
+  Reflect.deleteProperty(navigator, 'clipboard')
 })
 
 async function renderLoaded() {

@@ -143,7 +143,7 @@ environment="$(json_get "$WORK/health.json" environment)"
 [ -n "$commit" ] || fail "health" "HTTP 200 but commit is missing or empty"
 [ -n "$environment" ] || fail "health" "HTTP 200 but environment is missing or empty"
 if [ -n "${SMOKE_EXPECT_COMMIT:-}" ] && [ "$commit" != "$SMOKE_EXPECT_COMMIT" ]; then
-  fail "health" "commit ${commit:0:7} != expected ${SMOKE_EXPECT_COMMIT:0:7} (SMOKE_EXPECT_COMMIT)"
+  fail "health" "commit $commit != expected $SMOKE_EXPECT_COMMIT (SMOKE_EXPECT_COMMIT)"
 fi
 pass "health" "HTTP 200 database=ok version=$version commit=${commit:0:7} environment=$environment attempts=$attempt ${TIME}s"
 

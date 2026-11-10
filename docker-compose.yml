@@ -26,7 +26,8 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        # Shown as `commit` in /api/health, e.g. `GIT_SHA=$(git rev-parse HEAD) docker compose up --build`
+        # Baked into the image as ENV GIT_SHA and shown as `commit` in /api/health, e.g.
+        # `GIT_SHA=$(git rev-parse HEAD) docker compose up --build`
         GIT_SHA: ${GIT_SHA:-unknown}
     image: echonotes:local
     depends_on:
@@ -45,8 +46,8 @@ services:
       PORT: "8000"
       TRANSCRIBER_PROVIDER: ${TRANSCRIBER_PROVIDER:-fake}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
-      # Same value as the build arg, so an empty GIT_SHA in .env cannot hide the image's commit.
-      GIT_SHA: ${GIT_SHA:-unknown}
+      # No GIT_SHA here on purpose: the image's baked `ENV GIT_SHA` (from the build arg) must win,
+      # also for `up --no-build` of a CI-built image (#47).
 
 volumes:
   pgdata:

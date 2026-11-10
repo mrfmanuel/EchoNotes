@@ -24,8 +24,9 @@ BACKEND_KEYS = {
     "RENDER_GIT_COMMIT",
     "GIT_SHA",
 }
-# Set by the platform (Render) at runtime: documented in .env.example as a comment, not a value.
-PLATFORM_KEYS = {"RENDER_GIT_COMMIT"}
+# Documented in .env.example as comments, not values (#47): RENDER_GIT_COMMIT is set by Render,
+# and a `GIT_SHA=` line copied into .env (compose env_file) would blank the image's baked GIT_SHA.
+COMMENTED_KEYS = {"RENDER_GIT_COMMIT", "GIT_SHA"}
 
 
 def _env_example_values() -> dict[str, str]:
@@ -38,9 +39,15 @@ def _env_example_values() -> dict[str, str]:
 
 
 def test_env_example_lists_every_backend_setting() -> None:
-    assert _env_example_values().keys() >= BACKEND_KEYS - PLATFORM_KEYS
-    assert all(key in ENV_EXAMPLE.read_text(encoding="utf-8") for key in PLATFORM_KEYS)
+    assert _env_example_values().keys() >= BACKEND_KEYS - COMMENTED_KEYS
+    assert all(key in ENV_EXAMPLE.read_text(encoding="utf-8") for key in COMMENTED_KEYS)
     assert {name.upper() for name in Settings.model_fields} == BACKEND_KEYS
+
+
+def test_env_example_does_not_set_commit_values() -> None:
+    """An uncommented GIT_SHA/RENDER_GIT_COMMIT in a copied .env would hide the real commit."""
+    assert _env_example_values().keys() & COMMENTED_KEYS == set()
+    assert "# GIT_SHA=" in ENV_EXAMPLE.read_text(encoding="utf-8")
 
 
 def test_settings_defaults_equal_env_example_values(monkeypatch: pytest.MonkeyPatch) -> None:

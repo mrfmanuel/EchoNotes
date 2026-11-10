@@ -97,3 +97,25 @@ def test_exception_log_has_class_and_stack_but_not_the_message(
     (record,) = parse_json_logs(output)
     assert record["exc_type"] == "ValueError"
     assert "test_exception_log_has_class_and_stack" in record["stack_trace"]
+
+
+def test_uvicorn_color_message_extra_is_dropped_and_has_no_ansi_escapes(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    create_app()
+    capsys.readouterr()
+    colored = "Uvicorn running on \x1b[1mhttp://127.0.0.1:8000\x1b[0m (Press CTRL+C to quit)"
+
+    logging.getLogger("uvicorn.error").info(
+        "Uvicorn running on %s://%s:%d (Press CTRL+C to quit)",
+        "http",
+        "127.0.0.1",
+        8000,
+        extra={"color_message": colored},
+    )
+
+    output = capsys.readouterr().out
+    (record,) = parse_json_logs(output)
+    assert "color_message" not in record
+    assert "\x1b[" not in output and "\\u001b[" not in output
+    assert record["message"] == "Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)"

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useLayoutEffect, useRef } from 'react'
 
 /** Input types where Ctrl+V means "paste text", so the page must not grab the paste. */
 const NON_TEXT_INPUT_TYPES = new Set([
@@ -47,11 +47,14 @@ export function namePastedImage(file: File): File {
  */
 export function usePastedImage(onImage: (file: File) => void, enabled = true): void {
   const callback = useRef(onImage)
-  useEffect(() => {
+  // Layout effects run in the same commit that puts the gallery in the DOM, so the listener
+  // (and the latest callback) is in place as soon as the page is visible. Passive effects
+  // could run later, and a paste in between was lost (flaky test under CPU load).
+  useLayoutEffect(() => {
     callback.current = onImage
   })
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!enabled) return undefined
     function onPaste(event: ClipboardEvent): void {
       if (isTextEntry(document.activeElement)) return

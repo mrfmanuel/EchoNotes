@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -8,14 +10,30 @@ from app.api import exports, health, projects, screenshots, transcriptions
 from app.config import get_settings
 from app.db.session import dispose_engine
 from app.errors import register_error_handlers
+from app.event_loop import UVICORN_LOOP_OPTION, is_proactor_loop, use_selector_event_loop_policy
 from app.logging import configure_logging
 from app.middleware import RequestContextMiddleware
 from app.spa import mount_spa
 from app.transcription import build_transcriber
 
+# Windows (#41): before any loop exists, make asyncio hand out selector loops (no-op elsewhere).
+use_selector_event_loop_policy()
+
+logger = logging.getLogger(__name__)
+
+
+def warn_if_proactor_loop() -> None:
+    """psycopg async fails on the Windows Proactor loop: say how to start uvicorn instead."""
+    if is_proactor_loop(asyncio.get_running_loop()):
+        logger.error(
+            "Proactor event loop detected: database calls will fail on Windows",
+            extra={"fix": f"start uvicorn with --loop {UVICORN_LOOP_OPTION}"},
+        )
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    warn_if_proactor_loop()
     yield
     await dispose_engine()
 

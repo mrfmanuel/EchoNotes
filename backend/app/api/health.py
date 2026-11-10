@@ -37,6 +37,7 @@ async def database_is_reachable(session: AsyncSession) -> bool:
 
 @router.get(
     "/api/health",
+    operation_id="getHealth",
     response_model=Health,
     responses={status.HTTP_503_SERVICE_UNAVAILABLE: {"model": Health}},
 )

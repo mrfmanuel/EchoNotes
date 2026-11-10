@@ -461,6 +461,7 @@ components:
               items: { $ref: "#/components/schemas/TranscriptSummary" }
             screenshots:
               type: array
+              description: Oldest first, the same order as listScreenshots.
               items: { $ref: "#/components/schemas/Screenshot" }
 
     TranscriptSummary:

@@ -9,6 +9,9 @@ export interface Health {
   status: 'ok' | 'degraded'
   version: string
   database: 'ok' | 'error' | 'skipped'
+  /** Deployed git SHA (full), or `unknown`. */
+  commit: string
+  environment: 'local' | 'dev' | 'prod'
 }
 
 export type ErrorCode =

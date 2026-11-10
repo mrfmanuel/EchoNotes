@@ -1,4 +1,5 @@
 import { Link, Outlet } from 'react-router'
+import { AppFooter } from './AppFooter'
 
 export function Layout() {
   return (
@@ -15,6 +16,7 @@ export function Layout() {
       <main className="app-main">
         <Outlet />
       </main>
+      <AppFooter />
     </div>
   )
 }

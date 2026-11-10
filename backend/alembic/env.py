@@ -1,7 +1,6 @@
 """Alembic environment. Runs migrations with a sync psycopg engine.
 
-The URL comes from `DATABASE_URL` via app settings. Tests may pass a URL explicitly in
-`config.attributes["database_url"]` (never through alembic.ini).
+The URL always comes from `DATABASE_URL` via app settings (never from alembic.ini).
 """
 
 from logging.config import fileConfig
@@ -9,7 +8,7 @@ from logging.config import fileConfig
 from sqlalchemy import create_engine, pool
 
 from alembic import context
-from app.config import get_settings, normalize_database_url
+from app.config import get_settings
 from app.db import models  # noqa: F401  (registers the tables on Base.metadata)
 from app.db.base import Base
 
@@ -22,9 +21,6 @@ target_metadata = Base.metadata
 
 
 def _database_url() -> str:
-    explicit = config.attributes.get("database_url")
-    if explicit:
-        return normalize_database_url(explicit)
     return get_settings().sqlalchemy_url
 
 

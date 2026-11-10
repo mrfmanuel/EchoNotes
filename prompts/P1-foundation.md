@@ -20,7 +20,7 @@ Context:
 
 ## Tasks for this prompt
 
-1. **Git + GitHub**: `git init` (branch `main`), create a `.gitignore` (Python, Node, `.env`, `course-reference/`), create a PUBLIC GitHub repo `mrfmanuel/echonotes` with `gh repo create`, and push.
+1. **Git + GitHub**: the local repo is ALREADY initialized (branch `main`, no commits) with `origin` → https://github.com/mrfmanuel/EchoNotes.git (public, empty). Do NOT run `git init` or `gh repo create`. Create a `.gitignore` (Python, Node, `.env`, `.env.*` except `.env.example`, `course-reference/`) — `prompts/` stays tracked. Verify `.env` is ignored before the first commit, then make the first commit and push to `main`. Set the repo description and topics with `gh repo edit`.
 
 2. **Problem description**: `README.md` with: the problem, who it is for, functionality, expected behavior, architecture overview (short), how to run locally (placeholder commands that P2 will make real: `docker compose up --build`), how to run tests, links to all docs, and a "Course rubric mapping" table (criterion → where the evidence is). Keep the README honest: mark items that come in later prompts as "planned".
 

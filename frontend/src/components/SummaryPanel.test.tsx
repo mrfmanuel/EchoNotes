@@ -10,7 +10,12 @@ import {
   SUMMARY_ID,
   type MockApiClient,
 } from '../test/mockClient'
-import { SUMMARY_POLL_MS, SummaryPanel } from './SummaryPanel'
+import {
+  POLL_OFFLINE_MESSAGE,
+  SUMMARY_POLL_BACKOFF_MS,
+  SUMMARY_POLL_MS,
+  SummaryPanel,
+} from './SummaryPanel'
 
 const HTML = '<!doctype html><html><body><h1>Week 1 summary</h1></body></html>'
 const NEW_ID = '55555555-5555-4555-8555-555555555555'
@@ -34,10 +39,14 @@ async function flush(): Promise<void> {
   await act(async () => {})
 }
 
+/** Advances fake time in 1 s steps, letting React commit (and schedule the next poll) between. */
 async function advance(ms: number): Promise<void> {
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(ms)
-  })
+  const step = 1000
+  for (let elapsed = 0; elapsed < ms; elapsed += step) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(Math.min(step, ms - elapsed))
+    })
+  }
 }
 
 async function click(element: HTMLElement): Promise<void> {
@@ -113,6 +122,33 @@ describe('SummaryPanel – button state (US-22 AC6, AC7)', () => {
 
     expect(screen.getByRole('button', { name: 'Generating…' })).toBeDisabled()
     expect(client.startSummary).not.toHaveBeenCalled()
+  })
+
+  it('QA F1: a slow initial load cannot overwrite a job started right after it settles', async () => {
+    let resolveInitial: (summary: Summary | null) => void = () => {}
+    client.getLatestSummary.mockImplementationOnce(
+      () => new Promise<Summary | null>((resolve) => (resolveInitial = resolve)),
+    )
+    client.getLatestSummary.mockResolvedValue(makeSummary({ status: 'running' }))
+    client.startSummary.mockResolvedValue(makeSummary({ status: 'pending' }))
+    renderPanel()
+    await flush()
+
+    // While the first GET is still open, Generate is disabled and a click does not POST.
+    const button = screen.getByRole('button', { name: 'Generate summary' })
+    expect(button).toBeDisabled()
+    await click(button)
+    expect(client.startSummary).not.toHaveBeenCalled()
+
+    await act(async () => resolveInitial(null))
+    await click(screen.getByRole('button', { name: 'Generate summary' }))
+    await advance(9000)
+
+    expect(client.startSummary).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: 'Generating…' })).toBeDisabled()
+    expect(client.getLatestSummary).toHaveBeenCalledTimes(4) // initial + 3 polls
+    await advance(SUMMARY_POLL_MS)
+    expect(client.getLatestSummary).toHaveBeenCalledTimes(5)
   })
 
   it('AC1: shows a clear message when the API answers 409 no_transcripts', async () => {
@@ -198,6 +234,43 @@ describe('SummaryPanel – polling (US-22 AC8)', () => {
   })
 })
 
+describe('SummaryPanel – poll failures back off (QA follow-up)', () => {
+  it('after 3 failed polls shows "still retrying", polls every 10 s, and recovers', async () => {
+    const offline = apiError(0, 'Could not reach the server.')
+    client.getLatestSummary
+      .mockResolvedValueOnce(makeSummary({ status: 'running' }))
+      .mockRejectedValueOnce(offline)
+      .mockRejectedValueOnce(offline)
+      .mockRejectedValueOnce(offline)
+      .mockRejectedValueOnce(offline)
+      .mockResolvedValue(makeSummary({ status: 'running' }))
+    renderPanel()
+    await flush()
+
+    await advance(SUMMARY_POLL_MS * 2)
+    expect(client.getLatestSummary).toHaveBeenCalledTimes(3)
+    expect(screen.queryByText(POLL_OFFLINE_MESSAGE)).not.toBeInTheDocument()
+
+    await advance(SUMMARY_POLL_MS) // third consecutive failure
+    expect(client.getLatestSummary).toHaveBeenCalledTimes(4)
+    expect(screen.getByText(POLL_OFFLINE_MESSAGE)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Generating…' })).toBeDisabled()
+
+    // Backed off: nothing at 3 s, the next poll (a 4th failure) at 10 s.
+    await advance(SUMMARY_POLL_MS)
+    expect(client.getLatestSummary).toHaveBeenCalledTimes(4)
+    await advance(SUMMARY_POLL_BACKOFF_MS - SUMMARY_POLL_MS)
+    expect(client.getLatestSummary).toHaveBeenCalledTimes(5)
+
+    await advance(SUMMARY_POLL_BACKOFF_MS) // succeeds again
+    expect(client.getLatestSummary).toHaveBeenCalledTimes(6)
+    expect(screen.queryByText(POLL_OFFLINE_MESSAGE)).not.toBeInTheDocument()
+
+    await advance(SUMMARY_POLL_MS) // back to the normal interval
+    expect(client.getLatestSummary).toHaveBeenCalledTimes(7)
+  })
+})
+
 describe('SummaryPanel – failed state (US-22 AC9)', () => {
   it.each<[SummaryErrorCode | null, string]>([
     ['provider_timeout', 'The AI provider took too long. Try again.'],
@@ -242,7 +315,11 @@ describe('SummaryPanel – succeeded summary (US-22 AC10, AC11, AC5)', () => {
 
     const toggle = screen.getByRole('button', { name: 'View summary' })
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    // aria-controls points at an element that exists even while the viewer is closed.
+    const controls = toggle.getAttribute('aria-controls') ?? ''
+    expect(document.getElementById(controls)).not.toBeNull()
     await click(toggle)
+    expect(document.getElementById(controls)?.querySelector('iframe')).not.toBeNull()
 
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
     const frame = screen.getByTitle('Project summary')

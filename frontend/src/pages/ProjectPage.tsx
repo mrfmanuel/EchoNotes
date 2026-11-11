@@ -104,7 +104,11 @@ export function ProjectPage() {
           </p>
         </div>
         <ExportButton projectId={project.id} projectSlug={project.slug} />
-        <SummaryPanel projectId={project.id} transcriptCount={project.transcripts.length} />
+        <SummaryPanel
+          key={project.id}
+          projectId={project.id}
+          transcriptCount={project.transcripts.length}
+        />
       </section>
     </div>
   )

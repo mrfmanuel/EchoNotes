@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useApi } from '../api/context'
 import { summaryFailureMessage, summaryRequestErrorMessage } from '../api/errors'
 import type { Summary, SummaryStatus } from '../api/types'
@@ -6,6 +6,11 @@ import { formatDate, pluralize } from '../lib/format'
 
 /** US-22 AC8: how often `GET .../summaries/latest` is polled while a job is active. */
 export const SUMMARY_POLL_MS = 3000
+/** After this many consecutive failed polls, warn the user and back off. */
+export const SUMMARY_POLL_FAILURES_BEFORE_BACKOFF = 3
+/** Poll interval while the server cannot be reached (polling never gives up). */
+export const SUMMARY_POLL_BACKOFF_MS = 10000
+export const POLL_OFFLINE_MESSAGE = "Can't reach the server, still retrying…"
 
 /**
  * The summary HTML comes from an LLM, so it is untrusted even after server-side sanitizing.
@@ -46,6 +51,11 @@ export function SummaryPanel({ projectId, transcriptCount }: SummaryPanelProps) 
   const [requestError, setRequestError] = useState<string | null>(null)
   const [viewOpen, setViewOpen] = useState(false)
   const [pollRound, setPollRound] = useState(0)
+  const [pollFailures, setPollFailures] = useState(0)
+  // Generate stays disabled until the initial load settles, so a late initial result cannot
+  // overwrite a job the user just started; `startedRef` guards that as well (belt and braces).
+  const [loaded, setLoaded] = useState(false)
+  const startedRef = useRef(false)
 
   const apply = useCallback((summary: Summary | null) => {
     setLatest(summary)
@@ -55,18 +65,24 @@ export function SummaryPanel({ projectId, transcriptCount }: SummaryPanelProps) 
   // AC7: on open, load the latest summary (an active one resumes the Generating… state).
   useEffect(() => {
     let mounted = true
-    api.getLatestSummary(projectId).then(
-      (summary) => mounted && apply(summary),
-      (error: unknown) => mounted && setRequestError(summaryRequestErrorMessage(error)),
-    )
+    api
+      .getLatestSummary(projectId)
+      .then(
+        (summary) => mounted && !startedRef.current && apply(summary),
+        (error: unknown) =>
+          mounted && !startedRef.current && setRequestError(summaryRequestErrorMessage(error)),
+      )
+      .finally(() => mounted && setLoaded(true))
     return () => {
       mounted = false
     }
   }, [api, projectId, apply])
 
   const polling = latest !== null && isActive(latest.status)
+  const offline = polling && pollFailures >= SUMMARY_POLL_FAILURES_BEFORE_BACKOFF
+  const delay = offline ? SUMMARY_POLL_BACKOFF_MS : SUMMARY_POLL_MS
 
-  // AC8: one poll every SUMMARY_POLL_MS while active; stops at a terminal state and on unmount.
+  // AC8: one poll per round while active; stops at a terminal state and on unmount.
   useEffect(() => {
     if (!polling) return undefined
     let cancelled = false
@@ -74,22 +90,29 @@ export function SummaryPanel({ projectId, transcriptCount }: SummaryPanelProps) 
       api.getLatestSummary(projectId).then(
         (summary) => {
           if (cancelled) return
+          setPollFailures(0)
           apply(summary)
           if (summary?.status === 'succeeded') setViewOpen(true)
           setPollRound((n) => n + 1)
         },
-        // A failed poll (e.g. a network blip) is retried on the next round.
-        () => !cancelled && setPollRound((n) => n + 1),
+        // A failed poll (e.g. a network blip) is retried next round, more slowly after a few.
+        () => {
+          if (cancelled) return
+          setPollFailures((n) => n + 1)
+          setPollRound((n) => n + 1)
+        },
       )
-    }, SUMMARY_POLL_MS)
+    }, delay)
     return () => {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [api, projectId, polling, pollRound, apply])
+  }, [api, projectId, polling, pollRound, delay, apply])
 
   async function onGenerate(): Promise<void> {
+    startedRef.current = true
     setRequestError(null)
+    setPollFailures(0)
     setStarting(true)
     try {
       apply(await api.startSummary(projectId))
@@ -103,7 +126,7 @@ export function SummaryPanel({ projectId, transcriptCount }: SummaryPanelProps) 
   const noTranscripts = transcriptCount < 1
   const generating = starting || polling
   const hintId = `${ids}-hint`
-  const frameId = `${ids}-frame`
+  const viewerId = `${ids}-viewer`
 
   return (
     <>
@@ -112,8 +135,8 @@ export function SummaryPanel({ projectId, transcriptCount }: SummaryPanelProps) 
           type="button"
           className="btn"
           onClick={() => void onGenerate()}
-          disabled={noTranscripts || generating}
-          aria-busy={generating}
+          disabled={!loaded || noTranscripts || generating}
+          aria-busy={generating || !loaded}
           aria-describedby={noTranscripts ? hintId : undefined}
           title={noTranscripts ? NO_TRANSCRIPTS_HINT : undefined}
         >
@@ -137,6 +160,11 @@ export function SummaryPanel({ projectId, transcriptCount }: SummaryPanelProps) 
         {generating && (
           <p className="status" role="status">
             Generating the AI summary. This can take up to a minute or two.
+          </p>
+        )}
+        {offline && (
+          <p className="hint hint-error" role="status">
+            {POLL_OFFLINE_MESSAGE}
           </p>
         )}
         {requestError && (
@@ -176,7 +204,7 @@ export function SummaryPanel({ projectId, transcriptCount }: SummaryPanelProps) 
                 type="button"
                 className="btn btn-small"
                 aria-expanded={viewOpen}
-                aria-controls={frameId}
+                aria-controls={viewerId}
                 onClick={() => setViewOpen((open) => !open)}
               >
                 View summary
@@ -189,15 +217,17 @@ export function SummaryPanel({ projectId, transcriptCount }: SummaryPanelProps) 
                 Download summary.html
               </a>
             </div>
-            {viewOpen && (
-              <iframe
-                id={frameId}
-                className="summary-frame"
-                title="Project summary"
-                sandbox={SUMMARY_IFRAME_SANDBOX}
-                srcDoc={shown.html ?? ''}
-              />
-            )}
+            {/* Always rendered, so `aria-controls` never points at a missing element. */}
+            <div id={viewerId}>
+              {viewOpen && (
+                <iframe
+                  className="summary-frame"
+                  title="Project summary"
+                  sandbox={SUMMARY_IFRAME_SANDBOX}
+                  srcDoc={shown.html ?? ''}
+                />
+              )}
+            </div>
           </div>
         )}
       </div>

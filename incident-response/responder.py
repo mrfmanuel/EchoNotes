@@ -441,6 +441,20 @@ def sandbox_env(base: dict[str, str], work_dir: Path) -> dict[str, str]:
 # --- agent ----------------------------------------------------------------------------------------
 
 
+# Meta keywords the claude CLI's schema validator rejects (it does not know the draft 2020-12
+# metaschema URI). They only identify the document; dropping them does not change what is valid.
+CLI_SCHEMA_DROP_KEYS = ("$schema", "$id")
+
+
+def cli_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """The schema as passed to `claude --json-schema`: the contract minus `$schema`/`$id`.
+
+    response.schema.json stays the documented contract and the responder still validates the
+    answer against the full file (Draft 2020-12) in validate_response().
+    """
+    return {k: v for k, v in schema.items() if k not in CLI_SCHEMA_DROP_KEYS}
+
+
 def claude_argv(policy: dict[str, Any], schema: dict[str, Any]) -> list[str]:
     agent = policy["agent"]
     exe = shutil.which("claude") or "claude"
@@ -452,7 +466,7 @@ def claude_argv(policy: dict[str, Any], schema: dict[str, Any]) -> list[str]:
         "--output-format",
         "json",
         "--json-schema",
-        json.dumps(schema, separators=(",", ":")),
+        json.dumps(cli_schema(schema), separators=(",", ":")),
         "--max-turns",
         str(agent["max_turns"]),
         "--max-budget-usd",
@@ -1119,8 +1133,12 @@ class Incident:
         )
         meta, answer = parse_agent_output(result.stdout)
         if result.stderr.strip():
-            last = result.stderr.strip().splitlines()[-1][:300]
+            last = self.redact(result.stderr.strip().splitlines()[-1][:300])
             self.log.note(f"agent stderr (last line): {last}")
+        if "parse_error" in meta and result.stdout.strip():
+            # Not a JSON envelope: a CLI error may be printed on stdout instead of stderr.
+            last = self.redact(result.stdout.strip().splitlines()[-1][:300])
+            self.log.note(f"agent stdout (last line, not JSON): {last}")
         meta.update(
             {
                 "exit_code": result.exit_code,

@@ -103,7 +103,7 @@ chaos worktree and the responder log of `test-incident.sh` live in the git-ignor
 | **Limits** | one incident at a time; per-command timeouts | `--max-turns 40`, `--max-budget-usd 3`, wall-clock timeout 20 min (process tree killed), `--no-session-persistence` |
 | **Can** | open a PR against the explicit incident base branch (`ONCALL_PR_BASE`, e.g. `chaos/INC-<id>`); redeploy the **local** incident stack | read code, write a failing test, edit `backend/app/**` / `backend/tests/**`, run unit tests and ruff |
 | **Cannot** | deploy to Render dev/prod, merge PRs, open a PR against `main` (no base configured means no push and no PR, the incident escalates) | push, deploy, open PRs, use the network tools, read secrets from the env or `.env` files. A diff outside the allowlist, a planted git hook or config change, or a deleted test is rejected **before** anything is pushed |
-| **Output** | incident folder, PR, rebuilt container | one JSON object matching [`response.schema.json`](../incident-response/response.schema.json) |
+| **Output** | incident folder, PR, rebuilt container | one JSON object matching [`response.schema.json`](../incident-response/response.schema.json). The CLI gets it via `--json-schema` without `$schema`/`$id` (its validator does not know the draft 2020-12 URI); the responder validates the answer against the full file. A CLI error is recorded in `commands.log` as `agent stderr (last line)` or `agent stdout (last line, not JSON)` |
 
 **How the decision binds what is pushed.** Agent-written code also runs outside the agent's own
 turn: in its `uv run pytest` calls and in the responder's checks. So the responder does not trust

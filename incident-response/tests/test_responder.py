@@ -435,6 +435,17 @@ def test_claude_command_has_the_restricting_flags() -> None:
     assert "WebFetch" in argv[argv.index("--disallowedTools") + 1 :]
 
 
+def test_cli_bound_schema_has_no_schema_or_id_keywords() -> None:
+    # The claude CLI rejects `"$schema": ".../draft/2020-12/schema"` (INC-20261111-051629).
+    assert "$schema" in SCHEMA and "$id" in SCHEMA  # the documented contract keeps them
+    argv = r.claude_argv(POLICY, SCHEMA)
+    passed = json.loads(argv[argv.index("--json-schema") + 1])
+    assert "$schema" not in passed and "$id" not in passed
+    assert passed == {k: v for k, v in SCHEMA.items() if k not in ("$schema", "$id")}
+    assert r.cli_schema(SCHEMA) == passed
+    assert "$schema" in SCHEMA  # the caller's dict is not mutated
+
+
 # --- evidence scrubbing ---
 
 
@@ -760,6 +771,21 @@ def test_pipeline_escalates_and_commits_nothing_when_a_check_fails(
     branch_head = _git(sandbox["repo"], "rev-parse", state["branch"])
     assert branch_head == head_before  # nothing committed on the oncall branch
     assert "fix_commit" not in state
+
+
+@pytest.mark.parametrize(
+    ("scenario", "stream"), [("cli_error_stderr", "stderr"), ("cli_error_stdout", "stdout")]
+)
+def test_pipeline_records_a_cli_error_from_either_stream_and_escalates(
+    sandbox: dict[str, Any], monkeypatch: pytest.MonkeyPatch, scenario: str, stream: str
+) -> None:
+    state, folder = run_incident(scenario, monkeypatch)
+    assert state["status"] == "escalated"
+    decision = json.loads((folder / "policy-decision.json").read_text("utf-8"))
+    assert "agent_run_completed" in decision["failed_checks"]
+    log = (folder / "commands.log").read_text("utf-8")
+    assert f"agent {stream} (last line" in log
+    assert "--json-schema is not a valid JSON Schema (stub)" in log
 
 
 @pytest.mark.parametrize("scenario", ["plant_hook", "plant_hook_via_test"])

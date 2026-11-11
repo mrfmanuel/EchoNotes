@@ -1,6 +1,7 @@
 # Whole system with one command (#22): `docker compose up --build` -> http://localhost:8000
 # Works on a fresh clone WITHOUT .env (fake transcriber, local Postgres credentials).
-# `.env` is optional: it can switch TRANSCRIBER_PROVIDER=groq and set GROQ_API_KEY.
+# `.env` is optional: it can switch TRANSCRIBER_PROVIDER=groq and set GROQ_API_KEY, or set
+# GEMINI_API_KEY for real AI summaries (without it summaries use the offline `fake` provider).
 # Data lives in the named volume `pgdata`: kept by `docker compose down`, wiped by `down -v`.
 #
 # Local observability (#30): `make obs-up` adds the `observability` profile (service `lgtm`:
@@ -57,6 +58,20 @@ services:
       PORT: "8000"
       TRANSCRIBER_PROVIDER: ${TRANSCRIBER_PROVIDER:-fake}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
+      # AI project summary (US-22). Empty SUMMARIZER_PROVIDER = auto: gemini when GEMINI_API_KEY
+      # is set (shell or .env), otherwise the offline `fake` (no .env, CI). An empty key is valid.
+      # The other defaults repeat the app's own (backend/app/config.py): never pass an empty
+      # string for a model or a number, it would override the app default or fail validation.
+      SUMMARIZER_PROVIDER: ${SUMMARIZER_PROVIDER:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.8-flash}
+      # No colon on purpose: an explicit empty GEMINI_FALLBACK_MODEL= disables the fallback.
+      GEMINI_FALLBACK_MODEL: ${GEMINI_FALLBACK_MODEL-gemini-3.5-flash-lite}
+      GROQ_SUMMARY_MODEL: ${GROQ_SUMMARY_MODEL:-openai/gpt-oss-120b}
+      SUMMARY_TIMEOUT_SECONDS: ${SUMMARY_TIMEOUT_SECONDS:-90}
+      SUMMARY_MAX_CHARS: ${SUMMARY_MAX_CHARS:-60000}
+      SUMMARY_MAX_IMAGES: ${SUMMARY_MAX_IMAGES:-8}
+      SUMMARY_IMAGE_MAX_PX: ${SUMMARY_IMAGE_MAX_PX:-1280}
       # Telemetry is off unless `make obs-up` sets OBS_OTLP_ENDPOINT=http://lgtm:4318. A dedicated
       # variable (not OTEL_EXPORTER_OTLP_ENDPOINT) so a host-dev value in .env cannot leak in here.
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OBS_OTLP_ENDPOINT:-}

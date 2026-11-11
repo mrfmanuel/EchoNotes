@@ -76,4 +76,9 @@ jobs:
           DEV_URL: ${{ vars.DEV_URL }}
           SHA: ${{ steps.target.outputs.sha }}
           DEPLOY_SUMMARY_TITLE: Deploy dev
+          # Dev only (#60): also smoke the AI summary with dev's real Gemini (one tiny call per
+          # deploy). A provider_error/provider_timeout (free-tier quota) is a warning, not a
+          # failed deploy; HTTP errors, stuck jobs and bad HTML still fail. Prod does not set it.
+          SMOKE_SUMMARY: "1"
+          SMOKE_SUMMARY_ALLOW_PROVIDER_ERROR: "1"
         run: scripts/deploy.sh dev "$DEV_URL" "$SHA"

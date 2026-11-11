@@ -110,7 +110,7 @@ class SummaryResult:
     model: str                        # the model that actually answered (the fallback when used)
 ```
 
-- **Errors** (`app/summarization/base.py`): `SummarizerError(provider, status_code)`, its subclass `SummarizerRateLimited` (429) and `SummarizerTimeout`. They carry the provider name and HTTP status only, never the key, prompt or response text.
+- **Errors** (`app/summarization/base.py`): `SummarizerError(provider, status_code)` with its subclass `SummarizerRateLimited` (429), and the separate `SummarizerTimeout(provider)` (a plain `Exception`, not a `SummarizerError`; the job maps it, like `asyncio.TimeoutError`, to `provider_timeout`). They carry the provider name and HTTP status only, never the key, prompt or response text.
 - **Selection** (`factory.py`): `SUMMARIZER_PROVIDER` empty = **auto**: `gemini` when `GEMINI_API_KEY` is set, otherwise `fake`. An explicit `gemini` without `GEMINI_API_KEY`, or `groq` without `GROQ_API_KEY`, raises `SummarizerConfigError` at startup. So Render (which has `GEMINI_API_KEY`) gets Gemini with no new variable, and compose without `.env`, CI and the tests get `fake`. Variables: [deployment.md](deployment.md#ai-project-summary-variables-us-22-60).
 - **gemini** (`gemini.py`): `POST {GEMINI_BASE_URL}/models/{model}:generateContent` with header `x-goog-api-key`, `system_instruction`, one user turn with the text plus each screenshot as `inline_data` (base64), `generationConfig.maxOutputTokens=8192`. No `temperature` (Gemini 3.6+ ignores it and will reject it). The text is `candidates[0].content.parts[*].text`. On **429** from `GEMINI_MODEL` it retries once with `GEMINI_FALLBACK_MODEL`; any other status (including 402 billing) fails without a fallback.
 - **groq** (`groq.py`): OpenAI-compatible `POST {GROQ_BASE_URL}/chat/completions` with `GROQ_SUMMARY_MODEL`, reusing `GROQ_API_KEY`. Text only: screenshots are listed by number, filename and linked transcript, and no image bytes are sent.
@@ -172,7 +172,11 @@ Telemetry: span `summary.generate`, `echonotes_summaries_total{provider,status}`
 
 **Known limits.**
 
-- **Startup recovery assumes one instance.** At startup, every `pending`/`running` job is marked `interrupted`. That is correct for our single Render instance per environment, where a restart or deploy really kills the old job. With rolling deploys or several instances, a new instance could mark as interrupted a job that the old instance is still running. Supporting that would need a per-instance owner or heartbeat column on `summaries`.
+- **Startup recovery and deploy overlap.** At startup, every `pending`/`running` job is marked `interrupted`. Each environment runs a single Render instance, but Render deploys with **zero downtime**: the new instance boots and runs this recovery, passes its health check, and only then is the old instance sent SIGTERM. So the old and new instances overlap on every deploy (and the same would hold for several instances). Two cases follow:
+  - **(a) A job already running on the old instance when the new one starts** is marked `interrupted` by the new instance. The old instance may then still finish it and overwrite the row with `succeeded`, or with `failed` and its real code. The final row is correct either way; only a client that polled in between briefly saw `interrupted`.
+  - **(b) A job started on the old instance after the new instance's recovery ran, and still in flight at SIGTERM,** is cancelled at shutdown. Cancellation writes nothing, so the row stays `running`. Because of the partial unique index, every `POST …/summaries` for that project then returns that dead job (202), and the UI polls it until the next restart (on free Render, the next idle spin-down). This is tracked in [#64](https://github.com/mrfmanuel/EchoNotes/issues/64) (a staleness rule: an active row older than `SUMMARY_TIMEOUT_SECONDS` plus a margin counts as `interrupted`).
+
+  Operational note in [deployment.md](deployment.md#summary-jobs-during-a-deploy).
 - **Image pixel cap of 16 MP.** Screenshots larger than 16 megapixels (`MAX_IMAGE_PIXELS`, checked from the header before decoding) are skipped. This protects the 512 MB free Render instance from decompression bombs and memory spikes while downscaling.
 
 ### Data model

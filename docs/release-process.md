@@ -36,11 +36,14 @@ flowchart TD
 
 ```bash
 gh workflow run deploy-dev.yml [-f ref=<sha>]        # manual redeploy of dev (normally automatic)
+gh workflow run deploy-dev.yml -f ref=<sha> -f smoke_summary=false  # a commit from before #62
 gh workflow run deploy-prod.yml [-f ref=<sha>]       # promote; empty ref = the commit running on dev
 gh workflow run rollback.yml -f environment=dev|prod -f ref=<known-good-sha>
 gh run watch                                         # follow it; prod waits for approval
 curl -s https://echonotes-prod.onrender.com/api/health   # {"commit": "<sha>", "environment": "prod", ...}
 ```
+
+The dev smoke also generates one AI summary with dev's Gemini (#60). Automatic runs always do this. A manual `deploy-dev.yml` run does it too unless `smoke_summary=false`, which you need to redeploy a commit from before the summary endpoints (#62), because they would answer 404. Rollbacks and prod deploys never run the summary step. Details: [deployment.md](deployment.md#cd-workflows-and-scriptsdeploysh-25-26-27).
 
 All workflows use `scripts/deploy.sh` (see [deployment.md](deployment.md#cd-workflows-and-scriptsdeploysh-25-26-27)). Every run's job summary shows the target SHA, the commit running before, the Render deploy id and the result, so each deploy is traceable to a commit. The deployed commit is also visible at `/api/health` and in the UI footer.
 

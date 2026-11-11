@@ -90,6 +90,7 @@ make smoke SMOKE_URL=https://<dev-or-prod-url> # post-deploy check (M3)
 | `SMOKE_EXPECT_COMMIT` | unset | Full SHA; the health step fails unless `/api/health` reports exactly this `commit` |
 | `SMOKE_SUMMARY` | unset | `1` runs the optional AI summary step (set by `deploy-dev.yml` only; CI and prod leave it off) |
 | `SMOKE_SUMMARY_TIMEOUT` | `120` | Seconds to wait for the summary job to reach `succeeded`/`failed` |
+| `SMOKE_SUMMARY_EXPECT_PROVIDER` | unset | Fail unless the summary's `provider` is exactly this value (deploy-dev sets `gemini`, so a missing key that falls back to `fake` fails) |
 | `SMOKE_SUMMARY_ALLOW_PROVIDER_ERROR` | unset | `1` turns a job `failed` with `provider_error`/`provider_timeout` (e.g. free-tier quota) into a warning; other failures still fail |
 
 ## Deploy script tests (`scripts/deploy.sh`, #25 #26 #27)

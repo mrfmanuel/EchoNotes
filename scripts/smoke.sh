@@ -28,6 +28,9 @@
 #                               slow LLM is not a deploy defect). HTTP errors, a stuck job,
 #                               internal_error/interrupted and bad HTML always fail. Set by
 #                               deploy-dev only.
+#   SMOKE_SUMMARY_EXPECT_PROVIDER=<name>
+#                               fail unless the summary's `provider` is exactly this (deploy-dev
+#                               sets `gemini`, so a missing key that falls back to fake fails)
 #
 # The smoke project is named `smoke-test-<UTC timestamp>-<pid>`. An EXIT trap deletes it even
 # when a step fails or the run is interrupted, so dev/prod keep no smoke data.
@@ -269,9 +272,15 @@ SUMMARY_IN_ZIP=0
 if [ "${SMOKE_SUMMARY:-}" = "1" ]; then
   request "$WORK/summary.json" -X POST "$BASE_URL/api/projects/$PROJECT_ID/summaries"
   [ "$CODE" = "202" ] || fail "start summary" "HTTP $CODE (want 202)"
-  SUMMARY_ID="$(json_get "$WORK/summary.json" id)"
+  SUMMARY_ID="$(json_get "$WORK/summary.json" id 2>/dev/null)" ||
+    fail "start summary" "HTTP 202 but the body is not JSON"
   [ -n "$SUMMARY_ID" ] || fail "start summary" "HTTP 202 but no summary id"
-  pass "start summary" "HTTP 202 id=$SUMMARY_ID provider=$(json_get "$WORK/summary.json" provider) ${TIME}s"
+  start_provider="$(json_get "$WORK/summary.json" provider)"
+  start_provider="${start_provider//$'\r'/}"
+  if [ -n "${SMOKE_SUMMARY_EXPECT_PROVIDER:-}" ] && [ "$start_provider" != "$SMOKE_SUMMARY_EXPECT_PROVIDER" ]; then
+    fail "start summary" "provider=$start_provider, want $SMOKE_SUMMARY_EXPECT_PROVIDER (SMOKE_SUMMARY_EXPECT_PROVIDER; is the provider key set on the server?)"
+  fi
+  pass "start summary" "HTTP 202 id=$SUMMARY_ID provider=$start_provider ${TIME}s"
 
   summary_start=$(date +%s)
   summary_deadline=$((summary_start + SUMMARY_TIMEOUT))
@@ -284,8 +293,14 @@ if [ "${SMOKE_SUMMARY:-}" = "1" ]; then
     # HTML of a succeeded summary without printing any of it.
     summary_state="$("$PY" - "$WORK/latest.json" <<'PY'
 import json, re, sys
-with open(sys.argv[1], encoding="utf-8") as fh:
-    data = json.load(fh)
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        data = json.load(fh)
+except (ValueError, UnicodeDecodeError):
+    data = None
+if not isinstance(data, dict):
+    print("not-json")
+    sys.exit(0)
 status = data.get("status") or "?"
 verdict = "-"
 if status == "succeeded":
@@ -301,6 +316,7 @@ print(" ".join(str(v or "-") for v in fields), verdict)
 PY
 )"
     summary_state="${summary_state//$'\r'/}" # python.exe on Windows may print CRLF
+    [ "$summary_state" != "not-json" ] || fail "summary latest" "HTTP 200 but the body is not a JSON object"
     read -r s_status s_id s_provider s_model s_error s_verdict <<<"$summary_state"
     [ "$s_id" = "$SUMMARY_ID" ] || fail "summary latest" "latest is $s_id, want $SUMMARY_ID"
     case "$s_status" in

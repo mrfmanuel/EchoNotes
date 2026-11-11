@@ -158,3 +158,29 @@ describe('ProjectPage – upload opens the new transcript (US-05 AC1)', () => {
     await waitFor(() => expect(router.state.location.pathname).toBe('/transcripts/created'))
   })
 })
+
+describe('ProjectPage – AI summary (US-22 AC6)', () => {
+  it('shows Generate summary next to Export ZIP, disabled with 0 transcripts', async () => {
+    renderApp(PATH, client)
+
+    const exportButton = await screen.findByRole('button', { name: 'Export ZIP' })
+    const section = exportButton.closest('section')
+    expect(section).not.toBeNull()
+    const generate = within(section as HTMLElement).getByRole('button', {
+      name: 'Generate summary',
+    })
+    expect(generate).toBeDisabled()
+    expect(generate).toHaveAttribute('title', 'Add at least one transcript to generate a summary.')
+    expect(client.getLatestSummary).toHaveBeenCalledWith(PROJECT_ID)
+  })
+
+  it('enables Generate summary when the project has a transcript', async () => {
+    client.getProject.mockResolvedValue(makeProjectDetail({ transcripts: [makeTranscript()] }))
+    renderApp(PATH, client)
+
+    await screen.findByRole('button', { name: 'Export ZIP' })
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Generate summary' })).toBeEnabled(),
+    )
+  })
+})

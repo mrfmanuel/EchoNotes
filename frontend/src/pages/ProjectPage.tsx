@@ -6,6 +6,7 @@ import type { ProjectDetail, TranscriptSummary } from '../api/types'
 import { ExportButton } from '../components/ExportButton'
 import { ProjectHeader } from '../components/ProjectHeader'
 import { ScreenshotGallery } from '../components/ScreenshotGallery'
+import { SummaryPanel } from '../components/SummaryPanel'
 import { LoadError, Loading, NotFound } from '../components/StatusViews'
 import { UploadForm } from '../components/UploadForm'
 import { formatDate, formatDuration, formatLanguage, pluralize } from '../lib/format'
@@ -94,14 +95,20 @@ export function ProjectPage() {
       </section>
 
       <section className="card export-bar" aria-labelledby="export-heading">
-        <div>
+        <div className="export-intro">
           <h2 id="export-heading">Export</h2>
           <p className="hint">
             Download {pluralize(project.transcripts.length, 'transcript')} and{' '}
-            {pluralize(project.screenshots.length, 'screenshot')} as one ZIP with a README index.
+            {pluralize(project.screenshots.length, 'screenshot')} as one ZIP with a README index,
+            or generate an AI summary as one HTML page.
           </p>
         </div>
         <ExportButton projectId={project.id} projectSlug={project.slug} />
+        <SummaryPanel
+          key={project.id}
+          projectId={project.id}
+          transcriptCount={project.transcripts.length}
+        />
       </section>
     </div>
   )

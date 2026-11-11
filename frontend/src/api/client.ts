@@ -13,6 +13,7 @@ import type {
   Screenshot,
   ScreenshotUpdate,
   ScreenshotUpload,
+  Summary,
   Transcript,
   TranscriptionUpload,
   TranscriptSummary,
@@ -75,6 +76,12 @@ export interface ApiClient {
   projectExportUrl(projectId: Uuid): string
   /** `exportProject`: the ZIP as a Blob plus the filename from `Content-Disposition` (or null). */
   exportProject(projectId: Uuid): Promise<ExportFile>
+  /** `startSummary` (POST, 202): a new pending job, or the project's already active one. */
+  startSummary(projectId: Uuid): Promise<Summary>
+  /** `getLatestSummary`: the most recently created summary, or `null` when there is none (404). */
+  getLatestSummary(projectId: Uuid): Promise<Summary | null>
+  /** URL of `downloadSummary`, for `<a href download>`. */
+  summaryDownloadUrl(projectId: Uuid, summaryId: Uuid): string
 }
 
 /** Result of `exportProject`. */
@@ -166,6 +173,16 @@ export function createApiClient(baseUrl = '', fetchImpl?: FetchLike): ApiClient 
     return { blob, filename: filenameFromDisposition(response.headers.get('Content-Disposition')) }
   }
 
+  async function getLatestSummary(projectId: Uuid): Promise<Summary | null> {
+    try {
+      return await request<Summary>(`/api/projects/${enc(projectId)}/summaries/latest`)
+    } catch (error) {
+      // US-22 AC2: 404 means the project never had a summary (or the project is gone).
+      if (error instanceof ApiError && error.status === 404) return null
+      throw error
+    }
+  }
+
   return {
     getHealth: () => request<Health>('/api/health', { okStatuses: [503] }),
     listProjects: () => request<Project[]>('/api/projects'),
@@ -220,5 +237,10 @@ export function createApiClient(baseUrl = '', fetchImpl?: FetchLike): ApiClient 
     screenshotImageUrl: (screenshotId) => `${baseUrl}/api/screenshots/${enc(screenshotId)}/image`,
     projectExportUrl: (projectId) => `${baseUrl}/api/projects/${enc(projectId)}/export`,
     exportProject,
+    startSummary: (projectId) =>
+      request<Summary>(`/api/projects/${enc(projectId)}/summaries`, { method: 'POST' }),
+    getLatestSummary,
+    summaryDownloadUrl: (projectId, summaryId) =>
+      `${baseUrl}/api/projects/${enc(projectId)}/summaries/${enc(summaryId)}/download`,
   }
 }

@@ -52,6 +52,14 @@ for candidate in python3 python; do
 done
 [ -n "$PY" ] || die "no python3/python found"
 
+# The responder's work dir (agent worktrees, dedupe state) is OUTSIDE the repo tree.
+if [ -z "${ONCALL_WORK_DIR:-}" ]; then
+  ONCALL_WORK_DIR="$("$PY" -c 'import os, tempfile; print(os.path.join(tempfile.gettempdir(), "echonotes-oncall"))')"
+fi
+export ONCALL_WORK_DIR
+oncall_work="$ONCALL_WORK_DIR"
+if command -v cygpath >/dev/null 2>&1; then oncall_work="$(cygpath -u "$ONCALL_WORK_DIR")"; fi
+
 # Fixed, safe values for every compose call (docker-compose.yml interface of #30): own project,
 # ports, fake provider, no Groq key, OTLP to the lgtm service, alert webhook to the responder.
 compose_env() {
@@ -68,7 +76,8 @@ cleanup() {
       down -v --remove-orphans) || true
   fi
   say "cleanup: worktrees and local branches"
-  for dir in "$work"/chaos-INC-* "$work"/oncall-INC-* "$work"/repro-INC-*; do
+  for dir in "$work"/chaos-INC-* "$oncall_work"/oncall-INC-* "$oncall_work"/repro-INC-* \
+    "$oncall_work"/verify-INC-*; do
     [ -e "$dir" ] || continue
     git -C "$repo" worktree remove --force "$dir" 2>/dev/null || rm -rf "$dir"
   done
@@ -83,8 +92,8 @@ cleanup() {
   for image in $(docker image ls --format '{{.Repository}}:{{.Tag}}' 'echonotes-incident' 2>/dev/null); do
     docker image rm "$image" >/dev/null 2>&1 || true
   done
-  rm -f "$work/state.json" "$work"/responder-*.log
-  rm -rf "$work/sandbox"
+  rm -f "$oncall_work/state.json" "$work"/responder-*.log
+  rm -rf "$oncall_work/sandbox"
   echo "cleanup done (incident folders in incident-response/incidents/ are kept)"
 }
 
@@ -114,7 +123,7 @@ ID="INC-$(date -u +%Y%m%d-%H%M%S)"
 chaos_branch="chaos/$ID"
 chaos_wt="$work/chaos-$ID"
 mkdir -p "$work" "$here/incidents"
-rm -f "$work/state.json"   # a fresh demo must not be de-duplicated against an old run
+rm -f "$oncall_work/state.json"   # a fresh demo must not be de-duplicated against an old run
 echo "incident id: $ID   base: $BASE_REF ($(git -C "$repo" rev-parse --short "$base_sha"))"
 
 # --- 1. chaos worktree + commit -------------------------------------------------------------------
@@ -193,7 +202,8 @@ state = json.load(open(sys.argv[1], encoding="utf-8"))
 print()
 print(f"incident:  {state.get('incident_id')}  status={state.get('status')}")
 print(f"folder:    incident-response/incidents/{state.get('incident_id')}/")
-print(f"PR:        {state.get('pr_url', 'none (see escalation.md)')}")
+no_pr = "none (see escalation.md)" if state.get("status") == "escalated" else "none (publish off)"
+print(f"PR:        {state.get('pr_url', no_pr)}")
 print(f"fix:       {state.get('fix_commit', 'none')}")
 PY
 echo "grafana:   http://localhost:$GRAFANA_PORT  (stack left running for screenshots)"

@@ -61,8 +61,8 @@ def good_answer(**overrides: Any) -> dict[str, Any]:
 
 OK_META = {"subtype": "success", "is_error": False}
 GOOD_CHANGES = [
-    r.FileChange("backend/app/x.py", 3, 1),
-    r.FileChange("backend/tests/unit/test_x.py", 6, 0),
+    r.FileChange("backend/app/x.py", 3, 1, "M"),
+    r.FileChange("backend/tests/unit/test_x.py", 6, 0, "A"),
 ]
 
 
@@ -85,16 +85,22 @@ def evaluate(
     reproduce: Any = repro_fails,
     meta: dict[str, Any] | None = None,
     policy: dict[str, Any] = POLICY,
+    candidate: Any = "same",
 ) -> dict[str, Any]:
+    """`candidate="same"`: the candidate commit has exactly the evaluated diff, no secrets."""
     answer = good_answer() if answer is None else answer
+    changes = GOOD_CHANGES if changes is None else changes
+    if candidate == "same":
+        candidate = lambda: (list(changes), "")  # noqa: E731
     return r.evaluate_policy(
         policy,
         OK_META if meta is None else meta,
         answer,
         r.validate_response(answer, SCHEMA),
-        GOOD_CHANGES if changes is None else changes,
+        changes,
         runner,
         reproduce,
+        candidate,
     )
 
 
@@ -284,6 +290,59 @@ def test_policy_escalates_a_fix_without_a_test() -> None:
     changes = [GOOD_CHANGES[0]]
     decision = evaluate(good_answer(files_changed=["backend/app/x.py"]), changes)
     assert by_name(decision)["test_added_or_changed"] is False
+
+
+def test_policy_escalates_a_deleted_test_file() -> None:  # QA R2
+    changes = [*GOOD_CHANGES, r.FileChange("backend/tests/unit/test_guard.py", 0, 7, "D")]
+    decision = evaluate(good_answer(files_changed=[c.path for c in changes]), changes)
+    assert by_name(decision)["no_tests_removed"] is False
+    assert decision["decision"] == "escalate"
+
+
+def test_policy_escalates_removed_test_functions() -> None:  # QA R2
+    changes = [
+        GOOD_CHANGES[0],
+        r.FileChange("backend/tests/unit/test_x.py", 2, 5, "M", "100644", 1),
+    ]
+    decision = evaluate(good_answer(files_changed=[c.path for c in changes]), changes)
+    assert by_name(decision)["no_tests_removed"] is False
+
+
+def test_only_deleted_test_lines_do_not_count_as_a_test_change() -> None:  # QA R2
+    changes = [GOOD_CHANGES[0], r.FileChange("backend/tests/unit/test_x.py", 0, 3, "M")]
+    decision = evaluate(good_answer(files_changed=[c.path for c in changes]), changes)
+    assert by_name(decision)["test_added_or_changed"] is False
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        r.FileChange("backend/app/link.py", 1, 0, "A", "120000"),  # symlink
+        r.FileChange("backend/app/sub", 1, 0, "A", "160000"),  # submodule
+        r.FileChange("backend/app/../../.github/x.yml", 1, 0, "A"),
+    ],
+)
+def test_policy_escalates_symlinks_submodules_and_unsafe_paths(change: r.FileChange) -> None:
+    changes = [*GOOD_CHANGES, change]  # QA S2
+    decision = evaluate(good_answer(files_changed=[c.path for c in changes]), changes)
+    assert by_name(decision)["only_regular_files"] is False
+
+
+def test_policy_escalates_when_the_commit_differs_from_the_evaluated_diff() -> None:  # QA R1
+    sneaky = [*GOOD_CHANGES, r.FileChange(".github/workflows/evil.yml", 1, 0, "A")]
+    decision = evaluate(candidate=lambda: (sneaky, ""))
+    assert by_name(decision)["commit_matches_evaluated_diff"] is False
+    assert by_name(decision)["unit_tests_pass"] is None  # nothing ran afterwards
+
+
+def test_policy_escalates_secrets_in_the_added_lines() -> None:  # QA S1
+    decision = evaluate(candidate=lambda: (list(GOOD_CHANGES), 'KEY = "gsk_abcdefghijklmnop"'))
+    assert by_name(decision)["no_secrets_in_diff"] is False
+
+
+def test_policy_without_a_candidate_commit_never_applies() -> None:
+    decision = evaluate(candidate=None)
+    assert decision["decision"] == "escalate"
 
 
 def test_policy_escalates_when_the_agent_misreports_its_files() -> None:
@@ -596,6 +655,7 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "ONCALL_PUBLISH": "0",
         "ONCALL_DEPLOY": "0",
         "GROQ_API_KEY": "gsk_must_not_reach_the_agent",
+        "ONCALL_STUB_MARKER": str(tmp_path / "hook-marker.txt"),
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -608,7 +668,11 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         return real_run(self, argv, *args, **kwargs)
 
     monkeypatch.setattr(r.IncidentLog, "run", run)
-    return {"repo": repo, "incidents": tmp_path / "incidents"}
+    return {
+        "repo": repo,
+        "incidents": tmp_path / "incidents",
+        "marker": tmp_path / "hook-marker.txt",
+    }
 
 
 def run_incident(scenario: str, monkeypatch: pytest.MonkeyPatch) -> tuple[dict, Path]:
@@ -662,6 +726,8 @@ def test_pipeline_commits_a_policy_approved_fix_on_the_oncall_branch(
         ("low_confidence", "confidence_at_least_minimum"),
         ("invalid_json", "response_matches_schema"),
         ("schema_violation", "response_matches_schema"),
+        ("delete_test", "no_tests_removed"),  # QA R2
+        ("leak_secret", "no_secrets_in_diff"),  # QA S1
     ],
 )
 def test_pipeline_escalates_and_commits_nothing_when_a_check_fails(
@@ -676,6 +742,36 @@ def test_pipeline_escalates_and_commits_nothing_when_a_check_fails(
     branch_head = _git(sandbox["repo"], "rev-parse", state["branch"])
     assert branch_head == head_before  # nothing committed on the oncall branch
     assert "fix_commit" not in state
+
+
+@pytest.mark.parametrize("scenario", ["plant_hook", "plant_hook_via_test"])
+def test_pipeline_planted_git_hooks_never_run_and_escalate(  # QA R1 regression
+    sandbox: dict[str, Any], monkeypatch: pytest.MonkeyPatch, scenario: str
+) -> None:
+    repo = sandbox["repo"]
+    head_before = _git(repo, "rev-parse", "main")
+    state, folder = run_incident(scenario, monkeypatch)
+    assert state["status"] == "escalated"
+    assert "git metadata modified" in state["escalation_reason"]
+    assert not sandbox["marker"].exists(), "a planted hook ran"
+    assert _git(repo, "rev-parse", state["branch"]) == head_before  # nothing committed
+    assert "fix_commit" not in state and not state.get("pushed")
+    hooks = Path(_git(repo, "rev-parse", "--git-common-dir"))
+    hooks = (hooks if hooks.is_absolute() else repo / hooks) / "hooks"
+    planted = [p.name for p in hooks.glob("*") if not p.name.endswith(".sample")]
+    assert planted == [], f"planted hooks were not removed: {planted}"
+    all_files = _git(repo, "log", "--all", "--name-only", "--format=")
+    assert ".github/workflows/evil.yml" not in all_files
+
+
+def test_pipeline_never_falls_back_to_main_as_pr_base(  # QA S6
+    sandbox: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ONCALL_PUBLISH", "1")
+    monkeypatch.delenv("ONCALL_PR_BASE", raising=False)
+    state, _folder = run_incident("good_fix", monkeypatch)
+    assert state["status"] == "escalated" and "no PR base" in state["escalation_reason"]
+    assert not state.get("pushed") and "pr_url" not in state
 
 
 def test_pipeline_escalates_when_the_deployed_commit_is_unknown(
@@ -747,7 +843,17 @@ def test_webhook_server_accepts_once_and_deduplicates(
 
     first = post(grafana_payload())
     second = post(grafana_payload())
+
+    import http.client  # noqa: PLC0415
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)  # QA S5
+    conn.putrequest("POST", "/alert")
+    conn.putheader("Content-Length", "not-a-number")
+    conn.endheaders()
+    bad_length = conn.getresponse().status
+    conn.close()
     responder.done.set()
+    assert bad_length == 400
     thread.join(timeout=5)
     assert len(first["accepted"]) == 1 and second["accepted"] == []
     assert started == first["accepted"]

@@ -41,6 +41,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -62,6 +63,7 @@ MAX_PROMPT_EVIDENCE_CHARS = 150_000
 OUTPUT_TAIL_LINES = 40
 INCIDENT_ID_RE = re.compile(r"^INC-[0-9]{8}-[0-9]{6}(?:-[0-9]+)?$")
 DEFAULT_COMPOSE_FILES = ("docker-compose.yml",)
+DEFAULT_WORK_DIR = Path(tempfile.gettempdir()) / "echonotes-oncall"
 
 # Environment variables the agent (and the checks that run its code) may see. Everything else,
 # notably GROQ_API_KEY, GH_TOKEN/GITHUB_TOKEN, RENDER_* deploy hooks and DATABASE_URL, is dropped.
@@ -160,7 +162,9 @@ class Config:
     def from_env(cls, env: dict[str, str] | None = None) -> Config:
         env = dict(os.environ) if env is None else env
         repo = Path(env.get("ONCALL_REPO") or HERE.parent).resolve()
-        work = Path(env.get("ONCALL_WORK_DIR") or HERE / ".work").resolve()
+        # Outside the repo tree (S4): relative paths from the agent's worktree never reach the
+        # operator's checkout (e.g. its .env). Default: <system temp>/echonotes-oncall.
+        work = Path(env.get("ONCALL_WORK_DIR") or DEFAULT_WORK_DIR).resolve()
         files = env.get("INCIDENT_COMPOSE_FILES")
         return cls(
             repo=repo,
@@ -553,57 +557,176 @@ def path_matches(path: str, patterns: Sequence[str]) -> bool:
     return any(glob_to_regex(p).match(path) for p in patterns)
 
 
+TEST_FUNCTION_RE = re.compile(r"^\s*(?:async\s+)?def\s+test\w*\s*\(", re.MULTILINE)
+NON_REGULAR_MODES = frozenset({"120000", "160000"})  # symlink, submodule (gitlink)
+
+
 @dataclass(frozen=True)
 class FileChange:
     path: str
     added: int
     deleted: int
+    status: str = "M"  # A (added), M (modified), D (deleted), T (type change)
+    mode: str = "100644"  # the new mode; 120000 = symlink, 160000 = submodule
+    tests_removed: int = 0  # `def test_*` functions that disappeared from this test file
 
     @property
     def lines(self) -> int:
         return self.added + self.deleted
 
+    def key(self) -> tuple[str, int, int, str, str]:
+        return (self.path, self.added, self.deleted, self.status, self.mode)
 
-def git_changes(worktree: Path, log: IncidentLog | None = None) -> list[FileChange]:
-    """The REAL diff of the worktree against HEAD, untracked files included."""
-    subprocess.run(
-        ["git", "-C", str(worktree), "add", "-A", "-N"], capture_output=True, check=False
-    )
-    proc = subprocess.run(
-        [
+
+class TamperError(Exception):
+    """Agent-controlled code changed git metadata (hooks, config) or the empty hooks dir."""
+
+
+class Git:
+    """Every git command of the responder goes through here, never through hooks.
+
+    `core.hooksPath` points at an empty directory (verified empty before every call), so hooks
+    planted by agent-written code (e.g. via `uv run pytest`) in the shared `.git/hooks` never
+    run; `core.fsmonitor=false` blocks a planted fsmonitor command. The environment is minimal
+    (no GROQ_API_KEY, tokens or deploy hooks), but keeps the operator's git config so commits
+    have an identity and `push` can use the credential helper.
+    """
+
+    def __init__(self, hooks_dir: Path, env: dict[str, str]) -> None:
+        self.hooks_dir = hooks_dir
+        self.env = env
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+
+    def argv(self, repo: Path, *args: str) -> list[str]:
+        if any(self.hooks_dir.iterdir()):
+            raise TamperError(f"the empty hooks dir is not empty: {self.hooks_dir}")
+        return [
             "git",
             "-C",
-            str(worktree),
+            str(repo),
+            "-c",
+            f"core.hooksPath={self.hooks_dir.as_posix()}",
+            "-c",
+            "core.fsmonitor=false",
             "-c",
             "core.quotepath=off",
-            "diff",
-            "--numstat",
-            "--no-renames",
-            "HEAD",
-        ],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-    )
+            *args,
+        ]
+
+    def out(self, repo: Path, *args: str, check: bool = False) -> str:
+        proc = subprocess.run(
+            self.argv(repo, *args),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=self.env,
+            check=False,
+        )
+        if check and proc.returncode != 0:
+            raise PipelineError(f"git {args[0]} failed (exit {proc.returncode})")
+        return proc.stdout
+
+
+def tool_env(base: dict[str, str]) -> dict[str, str]:
+    """Minimal env for the responder's own git commands (credentials via the git config only)."""
+    names = [n for n in SANDBOX_ENV_ALLOWLIST if n != "ANTHROPIC_API_KEY"] + ["SSH_AUTH_SOCK"]
+    env = {k: base[k] for k in names if base.get(k)}
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+def git_meta_snapshot(common_dir: Path) -> dict[str, bytes]:
+    """Files of the shared git dir that can make git execute code or hide changes."""
+    snapshot: dict[str, bytes] = {}
+    candidates = [common_dir / "config", *common_dir.glob("worktrees/*/config.worktree")]
+    for sub in ("hooks", "info"):
+        candidates += [p for p in (common_dir / sub).rglob("*") if p.is_file()]
+    for path in candidates:
+        if path.is_file():
+            snapshot[path.relative_to(common_dir).as_posix()] = path.read_bytes()
+    return snapshot
+
+
+def restore_git_meta(common_dir: Path, before: dict[str, bytes]) -> list[str]:
+    """Put the snapshot back; returns the paths that had been changed."""
+    after = git_meta_snapshot(common_dir)
+    changed = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+    for rel in changed:
+        path = common_dir / rel
+        if rel in before:
+            path.write_bytes(before[rel])
+        else:
+            path.unlink(missing_ok=True)
+    return changed
+
+
+def _count_tests(text: str | None) -> int:
+    return len(TEST_FUNCTION_RE.findall(text or ""))
+
+
+def diff_changes(git: Git, repo: Path, base: str, head: str | None = None) -> list[FileChange]:
+    """The REAL diff `base..head` (head None = the working tree, untracked files included):
+    status, new mode, added/deleted lines and removed test functions per file."""
+    if head is None:
+        git.out(repo, "add", "-A", "-N")
+    rev = [base] if head is None else [base, head]
+    raw = git.out(repo, "diff", "--raw", "--no-renames", *rev)
+    numstat = git.out(repo, "diff", "--numstat", "--no-renames", *rev)
+    meta: dict[str, tuple[str, str]] = {}
+    for line in raw.splitlines():
+        if line.startswith(":") and "\t" in line:
+            fields, path = line.split("\t", 1)
+            parts = fields.split()
+            meta[path.replace("\\", "/")] = (parts[4][:1], parts[1])
     changes = []
-    for line in proc.stdout.splitlines():
+    for line in numstat.splitlines():
         added, deleted, path = line.split("\t", 2)
+        path = path.replace("\\", "/")
+        status, mode = meta.get(path, ("M", "100644"))
+        removed = 0
+        if path.startswith("backend/tests/") and path.endswith(".py"):
+            old = git.out(repo, "show", f"{base}:{path}") if status != "A" else ""
+            if status == "D":
+                new = ""
+            elif head is None:
+                new = (repo / path).read_text(encoding="utf-8", errors="replace")
+            else:
+                new = git.out(repo, "show", f"{head}:{path}")
+            removed = max(0, _count_tests(old) - _count_tests(new))
         # Binary files show "-": count them as over the limit so they always escalate.
         changes.append(
             FileChange(
-                path.replace("\\", "/"),
+                path,
                 int(added) if added.isdigit() else 10_000,
                 int(deleted) if deleted.isdigit() else 10_000,
+                status,
+                mode,
+                removed,
             )
         )
-    if log:
-        log.note(f"diff: {len(changes)} file(s), {sum(c.lines for c in changes)} changed lines")
     return changes
+
+
+def added_lines(git: Git, repo: Path, base: str, head: str) -> str:
+    """Only the lines a commit adds (for the secret scan; context lines are existing code)."""
+    patch = git.out(repo, "diff", "-U0", "--no-renames", base, head)
+    return "\n".join(
+        line[1:]
+        for line in patch.splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    )
+
+
+def unsafe_path(path: str) -> bool:
+    parts = path.split("/")
+    return path.startswith("/") or ":" in path or "\\" in path or ".." in parts or "" in parts
 
 
 Check = dict[str, Any]
 CommandRunner = Callable[[str, list[str]], CmdResult]
+# Builds the candidate commit; returns (its diff against the deployed commit, its added lines).
+CandidateBuilder = Callable[[], tuple[list[FileChange], str]]
 
 
 def _check(name: str, passed: bool | None, detail: str) -> Check:
@@ -618,11 +741,17 @@ def evaluate_policy(
     changes: list[FileChange],
     run_check: CommandRunner,
     reproduce: Callable[[list[str]], CmdResult] | None = None,
+    candidate: CandidateBuilder | None = None,
 ) -> dict[str, Any]:
     """Every check is computed by code from facts (exit codes, git diff), never from the
-    agent's claims. Expensive command checks only run if the static checks passed."""
+    agent's claims. A skipped check counts as not passed. Expensive steps (building the
+    candidate commit, running code) only happen if every earlier check passed."""
     rules, actions, checks_cfg = policy["changes"], policy["actions"], policy["checks"]
     checks: list[Check] = []
+
+    def ok() -> bool:
+        return all(c["passed"] for c in checks)
+
     run_ok = agent_meta.get("subtype") == "success" and not agent_meta.get("is_error")
     checks.append(_check("agent_run_completed", run_ok, f"subtype={agent_meta.get('subtype')}"))
     checks.append(
@@ -660,6 +789,14 @@ def evaluate_policy(
             f"denied={denied}, outside_allowlist={outside}" if denied or outside else "all inside",
         )
     )
+    irregular = [c.path for c in changes if c.mode in NON_REGULAR_MODES or unsafe_path(c.path)]
+    checks.append(
+        _check(
+            "only_regular_files",
+            not irregular,
+            f"symlinks/submodules/unsafe paths: {irregular}" if irregular else "regular files",
+        )
+    )
     total = sum(c.lines for c in changes)
     checks.append(
         _check(
@@ -675,10 +812,27 @@ def evaluate_policy(
             f"{len(changes)} files, max {rules['max_changed_files']}",
         )
     )
-    test_files = [p for p in paths if p.startswith("backend/tests/")]
+    tests = [c for c in changes if c.path.startswith("backend/tests/")]
+    test_files = [c.path for c in tests if c.status != "D"]
+    deleted_tests = [c.path for c in tests if c.status == "D"]
+    removed = {c.path: c.tests_removed for c in tests if c.tests_removed}
+    checks.append(
+        _check(
+            "no_tests_removed",
+            not deleted_tests and not removed,
+            f"deleted test files {deleted_tests}, removed test functions {removed}"
+            if deleted_tests or removed
+            else "no test file deleted, no test function removed",
+        )
+    )
     if rules.get("require_test_change"):
+        added_test_lines = sum(c.added for c in tests if c.status != "D")
         checks.append(
-            _check("test_added_or_changed", bool(test_files), f"test files: {test_files}")
+            _check(
+                "test_added_or_changed",
+                added_test_lines > 0,
+                f"{added_test_lines} added test lines in {test_files}",
+            )
         )
     if rules.get("require_report_matches_diff"):
         claimed = sorted(
@@ -692,9 +846,33 @@ def evaluate_policy(
             )
         )
 
-    static_ok = all(c["passed"] for c in checks)
+    # The commit that would be pushed must be exactly the diff evaluated above.
+    if not ok() or candidate is None:
+        checks.append(_check("commit_matches_evaluated_diff", None, "skipped"))
+        checks.append(_check("no_secrets_in_diff", None, "skipped"))
+    else:
+        committed, added_text = candidate()
+        same = sorted(c.key() for c in committed) == sorted(c.key() for c in changes)
+        checks.append(
+            _check(
+                "commit_matches_evaluated_diff",
+                same,
+                "candidate commit == evaluated diff"
+                if same
+                else f"commit has {sorted(c.path for c in committed)}, evaluated {sorted(paths)}",
+            )
+        )
+        clean = scrub_text(added_text) == added_text
+        checks.append(
+            _check(
+                "no_secrets_in_diff",
+                clean,
+                "no secret patterns in added lines" if clean else "secret pattern in added lines",
+            )
+        )
+
     if checks_cfg.get("require_failing_test_before_fix"):
-        if not static_ok or reproduce is None:
+        if not ok() or reproduce is None:
             checks.append(_check("new_test_fails_before_fix", None, "skipped"))
         else:
             result = reproduce(test_files)
@@ -710,19 +888,27 @@ def evaluate_policy(
         ("lint_pass", "lint"),
         ("format_pass", "format"),
     ):
-        if not all(c["passed"] for c in checks):
+        if not ok():
             checks.append(_check(name, None, "skipped (an earlier check failed)"))
             continue
         result = run_check(name, list(checks_cfg[key]))
         checks.append(_check(name, result.exit_code == 0, f"exit {result.exit_code}"))
 
-    passed = all(c["passed"] for c in checks)
+    passed = ok()
     return {
         "decision": "apply_fix" if passed else "escalate",
         "failed_checks": [c["name"] for c in checks if c["passed"] is False],
         "checks": checks,
         "changed_files": [
-            {"path": c.path, "added": c.added, "deleted": c.deleted} for c in changes
+            {
+                "path": c.path,
+                "status": c.status,
+                "mode": c.mode,
+                "added": c.added,
+                "deleted": c.deleted,
+                "tests_removed": c.tests_removed,
+            }
+            for c in changes
         ],
         "changed_lines": total,
         "evaluated_at": utcnow().isoformat(),
@@ -766,6 +952,13 @@ class Incident:
         self.log = IncidentLog(self.dir / "commands.log", self.redact)
         self.worktree = cfg.work_dir / f"oncall-{incident_id}"
         self.branch = f"oncall/{incident_id}"
+        # All git commands: hooks disabled (empty hooksPath), minimal env (R1).
+        self.gitx = Git(cfg.work_dir / "sandbox" / "no-hooks", tool_env(cfg.env))
+        common = self.gitx.out(cfg.repo, "rev-parse", "--git-common-dir").strip()
+        self.common_dir = (cfg.repo / common).resolve() if common else cfg.repo / ".git"
+        self.meta_before: dict[str, bytes] = {}
+        self.candidate_sha: str | None = None
+        self.verify_dir: Path | None = None
         self.state: dict[str, Any] = {
             "incident_id": incident_id,
             "dedupe_key": key,
@@ -780,7 +973,10 @@ class Incident:
         _write_json(self.dir / "incident.json", self.state)
 
     def git(self, *args: str, cwd: Path | None = None, timeout: float = 120) -> CmdResult:
-        return self.log.run(["git", *args], cwd=cwd or self.cfg.repo, timeout=timeout)
+        repo = cwd or self.cfg.repo
+        argv = self.gitx.argv(repo, *args)
+        display = ["git", "-c", "core.hooksPath=<empty>", *args]
+        return self.log.run(argv, cwd=repo, env=self.gitx.env, timeout=timeout, display=display)
 
     # -- steps --
     def collect_evidence(self, alert_path: Path) -> dict[str, Any]:
@@ -869,38 +1065,44 @@ class Incident:
         return meta, answer
 
     def checks_runner(self) -> CommandRunner:
+        """Unit tests and lint run in the CLEAN checkout of the candidate commit (S3): files the
+        agent left in the worktree (git-ignored ones too) cannot influence the result."""
         env = sandbox_env(self.cfg.env, self.cfg.work_dir)
         timeout = float(self.policy["checks"]["timeout_seconds"])
 
         def run(name: str, argv: list[str]) -> CmdResult:
             self.log.note(f"policy check: {name}")
-            return self.log.run(argv, cwd=self.worktree / "backend", env=env, timeout=timeout)
+            if self.verify_dir is None:
+                return CmdResult(argv, 3, "", 0.0)
+            return self.log.run(argv, cwd=self.verify_dir / "backend", env=env, timeout=timeout)
 
         return run
 
     def reproducer(self, base_commit: str) -> Callable[[list[str]], CmdResult]:
-        """Copy only the changed test files onto the deployed code; they must fail there."""
+        """The changed test files FROM THE CANDIDATE COMMIT, on a clean checkout of the deployed
+        code: they must fail there (the bug is reproduced)."""
         env = sandbox_env(self.cfg.env, self.cfg.work_dir)
         timeout = float(self.policy["checks"]["timeout_seconds"])
 
         def run(test_files: list[str]) -> CmdResult:
             self.log.note("policy check: new_test_fails_before_fix")
+            if self.candidate_sha is None:
+                return CmdResult([], 3, "", 0.0)
             repro = self.cfg.work_dir / f"repro-{self.id}"
-            added = self.git("worktree", "add", "--detach", str(repro), base_commit)
-            if added.exit_code != 0:
+            if self.git("worktree", "add", "--detach", str(repro), base_commit).exit_code != 0:
                 return CmdResult([], 3, "", 0.0)
             try:
                 for rel in test_files:
-                    src, dst = self.worktree / rel, repro / rel
-                    if not src.is_file():
-                        continue
+                    content = self.gitx.out(self.cfg.repo, "show", f"{self.candidate_sha}:{rel}")
+                    dst = repro / rel
                     dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, dst)
+                    dst.write_text(content, encoding="utf-8", newline="\n")
                 tests = [
                     f[len("backend/") :]
                     for f in test_files
                     if f.endswith(".py") and Path(f).name.startswith("test_")
                 ]
+                self._uv_sync(repro)
                 argv = [*self.policy["checks"]["unit_tests"], *tests]
                 return self.log.run(argv, cwd=repro / "backend", env=env, timeout=timeout)
             finally:
@@ -908,66 +1110,96 @@ class Incident:
 
         return run
 
-    def commit_fix(
-        self, answer: dict[str, Any], changes: list[FileChange], models: list[str]
-    ) -> str:
-        area = _area([c.path for c in changes])
-        subject = f"fix({area}): {_short_summary(answer['summary'])} ({self.id})"
-        body = (
-            f"{answer['summary']}\n\nRoot cause: {answer['root_cause']}\n\n"
-            f"Incident: {self.id}. Proposed by the on-call agent ({', '.join(models) or 'agent'}),"
-            " accepted by autonomy-policy.yaml checks run by responder.py.\n\n"
-            "Co-Authored-By: Claude <noreply@anthropic.com>"
+    def _uv_sync(self, checkout: Path) -> None:
+        self.log.run(
+            ["uv", "sync", "--frozen", "--quiet"],
+            cwd=checkout / "backend",
+            env=sandbox_env(self.cfg.env, self.cfg.work_dir),
+            timeout=600,
         )
-        self.git("add", "-A", cwd=self.worktree)
-        msg = self.dir / "commit-message.txt"
-        msg.write_text(f"{subject}\n\n{scrub_text(body)}\n", encoding="utf-8")
-        result = self.git("commit", "-F", str(msg), cwd=self.worktree)
-        msg.unlink(missing_ok=True)
-        if result.exit_code != 0:
-            raise PipelineError("git commit failed")
-        sha = subprocess.run(
-            ["git", "-C", str(self.worktree), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
-        self.save_state(fix_commit=sha, commit_subject=subject)
+
+    def check_git_meta(self, when: str) -> None:
+        """R1: agent-written code may have planted hooks or config in the shared git dir."""
+        changed = restore_git_meta(self.common_dir, self.meta_before)
+        if changed:
+            self.log.note(f"git metadata modified {when}: {changed} (restored)")
+            raise TamperError(f"git metadata modified {when}: {changed} (restored, nothing used)")
+
+    def candidate_builder(
+        self, deployed: str, answer: dict[str, Any], changes: list[FileChange], models: list[str]
+    ) -> CandidateBuilder:
+        """Build the commit that WOULD be pushed with plumbing (write-tree + commit-tree: no
+        hooks, no branch moved), then check it out cleanly for the command checks."""
+
+        def build() -> tuple[list[FileChange], str]:
+            area = _area([c.path for c in changes])
+            subject = f"fix({area}): {_short_summary(answer['summary'])} ({self.id})"
+            body = (
+                f"{answer['summary']}\n\nRoot cause: {answer['root_cause']}\n\n"
+                f"Incident: {self.id}. Proposed by the on-call agent "
+                f"({', '.join(models) or 'agent'}), accepted by autonomy-policy.yaml checks run "
+                "by responder.py.\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
+            )
+            self.git("add", "-A", cwd=self.worktree)
+            tree = self.gitx.out(self.worktree, "write-tree", check=True).strip()
+            msg = self.cfg.work_dir / f"commit-message-{self.id}.txt"
+            msg.write_text(f"{subject}\n\n{scrub_text(body)}\n", encoding="utf-8", newline="\n")
+            try:
+                sha = self.gitx.out(
+                    self.worktree, "commit-tree", tree, "-p", deployed, "-F", str(msg), check=True
+                ).strip()
+            finally:
+                msg.unlink(missing_ok=True)
+            self.candidate_sha = sha
+            self.save_state(candidate_commit=sha, commit_subject=subject)
+            self.log.note(f"candidate commit {sha} (not on any branch yet)")
+            verify = self.cfg.work_dir / f"verify-{self.id}"
+            if self.git("worktree", "add", "--detach", str(verify), sha).exit_code != 0:
+                raise PipelineError("could not check out the candidate commit")
+            self.verify_dir = verify
+            self._uv_sync(verify)
+            committed = diff_changes(self.gitx, self.cfg.repo, deployed, sha)
+            return committed, added_lines(self.gitx, self.cfg.repo, deployed, sha)
+
+        return build
+
+    def promote(self, deployed: str) -> str:
+        """Move oncall/INC-<id> to the approved candidate (only after every check passed)."""
+        sha = self.candidate_sha or ""
+        ref = f"refs/heads/{self.branch}"
+        if self.git("update-ref", ref, sha, deployed).exit_code != 0:
+            raise PipelineError("could not move the branch to the approved commit")
+        self.save_state(fix_commit=sha)
         return sha
 
-    def pr_base(self, deployed: str) -> str | None:
-        if self.cfg.pr_base:
-            return self.cfg.pr_base
-        on_main = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(self.cfg.repo),
-                "merge-base",
-                "--is-ancestor",
-                deployed,
-                "origin/main",
-            ],
-            capture_output=True,
-            check=False,
-        )
-        return "main" if on_main.returncode == 0 else None
+    def cleanup_checkouts(self) -> None:
+        if self.verify_dir is not None and self.verify_dir.exists():
+            self.git("worktree", "remove", "--force", str(self.verify_dir))
+        self.verify_dir = None
 
-    def publish(self, deployed: str, answer: dict[str, Any], decision: dict[str, Any]) -> None:
+    def pr_base(self) -> str | None:
+        """Only an explicit base (the incident's chaos/INC-<id> or ONCALL_PR_BASE). Never a
+        fallback to `main`: a fix is opened against `main` by a human, through the normal gate."""
+        return self.cfg.pr_base
+
+    def publish(self, answer: dict[str, Any], decision: dict[str, Any]) -> None:
         pub = self.policy["publish"]
         if not self.cfg.publish:
             self.log.note("publish disabled (ONCALL_PUBLISH=0): no push, no PR")
             return
+        base = self.pr_base()
+        if base is None:
+            raise PipelineError("no PR base branch (set ONCALL_PR_BASE); nothing pushed")
         if pub.get("push_branch"):
-            if self.git("push", "-u", "origin", self.branch, cwd=self.worktree).exit_code != 0:
+            push = self.git("push", "--no-verify", "-u", "origin", self.branch, cwd=self.worktree)
+            if push.exit_code != 0:
                 raise PipelineError("git push failed")
             self.save_state(pushed=True)
-        base = self.pr_base(deployed)
-        if not pub.get("open_pr") or base is None:
-            self.log.note("no PR opened (no safe base branch; set ONCALL_PR_BASE)")
+        if not pub.get("open_pr"):
             return
         body = self.dir / "pr-body.md"
         body.write_text(self.pr_body(answer, decision, base), encoding="utf-8")
+        # gh has no hooks; it uses the operator's gh login (keyring or GH_TOKEN).
         result = self.log.run(
             [
                 "gh",
@@ -1049,7 +1281,8 @@ class Incident:
                 "--wait",
                 "app",
             ],
-            cwd=self.worktree,
+            # The clean checkout of the approved commit, not the agent's worktree (S3).
+            cwd=self.verify_dir or self.worktree,
             env=env,
             timeout=900,
         )
@@ -1096,13 +1329,20 @@ class Incident:
                 env=sandbox_env(self.cfg.env, self.cfg.work_dir),
                 timeout=600,
             )
+            # Snapshot hooks/config of the shared git dir: agent-written code must not change them.
+            self.meta_before = git_meta_snapshot(self.common_dir)
             meta, answer = self.run_agent(evidence, schema)
             schema_errors = validate_response(answer, schema)
             _write_json(
                 self.dir / "agent-response.json",
                 {"response": scrub(answer), "schema_errors": schema_errors, "run": meta},
             )
-            changes = git_changes(self.worktree, self.log)
+            self.check_git_meta("by the agent run")
+            changes = diff_changes(self.gitx, self.worktree, "HEAD")
+            self.log.note(
+                f"diff: {len(changes)} file(s), {sum(c.lines for c in changes)} changed lines"
+            )
+            valid = isinstance(answer, dict) and not schema_errors
             decision = evaluate_policy(
                 self.policy,
                 meta,
@@ -1111,15 +1351,21 @@ class Incident:
                 changes,
                 self.checks_runner(),
                 self.reproducer(deployed),
+                self.candidate_builder(deployed, answer, changes, meta.get("models", []))
+                if valid
+                else None,
             )
             _write_json(self.dir / "policy-decision.json", decision)
             self.log.note(
                 f"policy decision: {decision['decision']} failed={decision['failed_checks']}"
             )
+            # The checks ran agent code again (pytest): re-check the git metadata before
+            # anything moves a branch or talks to the remote.
+            self.check_git_meta("while the policy checks ran agent code")
             if decision["decision"] != "apply_fix":
                 return self.escalate("policy checks failed", decision, answer)
-            fix_sha = self.commit_fix(answer, changes, meta.get("models", []))
-            self.publish(deployed, answer, decision)
+            fix_sha = self.promote(deployed)
+            self.publish(answer, decision)
             recovered = self.deploy_and_verify(fix_sha)
             status = {
                 True: "resolved_verified",
@@ -1127,18 +1373,31 @@ class Incident:
                 None: "fix_committed",
             }[recovered]
             self.save_state(status=status, recovered=recovered)
-        except PipelineError as exc:
+        except (PipelineError, TamperError) as exc:
             return self.escalate(str(exc), decision, answer)
         except Exception as exc:  # noqa: BLE001 - never crash the server; escalate instead
             self.log.note(f"unexpected error: {type(exc).__name__}")
             return self.escalate(f"responder error: {type(exc).__name__}", decision, answer)
         finally:
+            with contextlib.suppress(Exception):
+                self.cleanup_checkouts()
             self.save_state(finished_at=utcnow().isoformat())
             self.write_report(decision, answer, meta)
         return self.state
 
     def escalate(self, reason: str, decision: dict[str, Any] | None, answer: Any) -> dict[str, Any]:
         self.log.note(f"ESCALATE: {reason}")
+        # Every incident folder has a policy-decision.json that says `escalate`, also when a
+        # pipeline step (tampering, push, rebuild) failed before or after the policy checks.
+        step = "git_metadata_unchanged" if "git metadata" in reason else "pipeline_step"
+        if decision is None:
+            decision = {"checks": [], "changed_files": [], "evaluated_at": utcnow().isoformat()}
+        if decision.get("decision") != "escalate" or reason != "policy checks failed":
+            decision["checks"] = [*decision.get("checks", []), _check(step, False, reason)]
+            decision["decision"] = "escalate"
+            decision["failed_checks"] = [c["name"] for c in decision["checks"] if not c["passed"]]
+            decision["escalation_reason"] = reason
+            _write_json(self.dir / "policy-decision.json", decision)
         failed = (decision or {}).get("failed_checks", [])
         has_commit = bool(self.state.get("fix_commit"))
         lines = [
@@ -1150,7 +1409,14 @@ class Incident:
             "Nothing was pushed or deployed by the responder."
             if not self.state.get("pushed")
             else "The fix branch was pushed, but a later step failed (see commands.log).",
-            "" if has_commit else "Nothing was committed.",
+            ""
+            if has_commit
+            else "Nothing was committed to a branch"
+            + (
+                f" (the rejected candidate `{self.candidate_sha}` is an unreferenced commit)."
+                if self.candidate_sha
+                else "."
+            ),
             "",
             "## What a human should do",
             "1. Open the dashboard and the runbook linked in `alert.json` (user impact first).",
@@ -1336,7 +1602,11 @@ class Responder:
                 if self.path.split("?")[0] != "/alert":
                     self._send(404, {"error": "not found"})
                     return
-                length = int(self.headers.get("Content-Length") or 0)
+                raw_length = (self.headers.get("Content-Length") or "0").strip()
+                if not raw_length.isdigit():
+                    self._send(400, {"error": "bad Content-Length"})
+                    return
+                length = int(raw_length)
                 if length <= 0 or length > MAX_WEBHOOK_BYTES:
                     self._send(413 if length else 400, {"error": "bad body size"})
                     return

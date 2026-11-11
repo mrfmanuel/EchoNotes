@@ -63,6 +63,9 @@ agent:
     - "Bash(uv run pytest:*)"
     - "Bash(uv run ruff:*)"
   disallowed_tools:
+    - "Read(**/.env*)"
+    - "Edit(**/.env*)"
+    - "Write(**/.env*)"
     - "WebFetch"
     - "WebSearch"
     - "Task"

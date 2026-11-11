@@ -27,7 +27,7 @@ flowchart TD
     J -- any check fails --> K[escalation.md<br/>nothing committed, pushed or deployed]
     J -- all pass --> L[commit fix INC-id<br/>push oncall/INC-id<br/>gh pr create --base chaos/INC-id]
     L --> M[rebuild ONLY the app container<br/>from the fixed worktree]
-    M --> N[runbooks/verify-recovery.sh<br/>fresh traffic, Prometheus delta, smoke<br/>-> verification.md]
+    M --> N[runbooks/verify-recovery.sh<br/>fresh traffic, Prometheus delta,<br/>fixed revision in target_info, smoke<br/>-> verification.md]
     N --> O[report.md<br/>human reviews the PR]
     K --> O
 ```
@@ -99,7 +99,7 @@ chaos worktree and the responder log of `test-incident.sh` live in the git-ignor
 | **Executes** | git (hooks disabled, minimal env), gh, docker compose, `verify-recovery.sh`, and the policy checks (pytest, ruff) in a clean checkout | only `uv run pytest ...` and `uv run ruff ...` (`--allowedTools`) |
 | **Explicitly denied** | n/a | `Read/Edit/Write(**/.env*)`, `WebFetch`, `WebSearch`, `Task`, `git push`/`commit`, `gh`, `curl`, `wget`, `docker`, `uv add`/`pip` (`--disallowedTools`); no MCP servers (`--strict-mcp-config`); user settings not loaded (`--setting-sources project`); `--permission-mode dontAsk` denies anything not allowlisted |
 | **Credentials** | the operator's git credential helper (push) and `gh` login (PR); Grafana `admin/admin` (local stack only) | only its own model login (Claude Code OAuth, or `ANTHROPIC_API_KEY` if set). No `GROQ_API_KEY`, no GitHub token, no Render deploy hooks, no `DATABASE_URL` |
-| **Environment** | git runs with an allowlisted env (no `GROQ_API_KEY`, tokens, deploy hooks) but the operator's git config; tests/lint run with the agent's sandbox env; docker compose gets the incident variables with `GROQ_API_KEY=""` | allowlist (`PATH`, home/temp dirs, locale, uv cache) + `TRANSCRIBER_PROVIDER=fake`, `GIT_CONFIG_NOSYSTEM=1`, empty `GIT_CONFIG_GLOBAL` (no credential helper), empty `GH_CONFIG_DIR` (no gh login), `GIT_TERMINAL_PROMPT=0`, unreachable `DOCKER_HOST` |
+| **Environment** | git runs with an allowlisted env (no `GROQ_API_KEY`, tokens, deploy hooks) and a pinned copy of the operator's git config (taken before the agent ran); tests/lint run with the agent's sandbox env; docker compose gets the incident variables with `GROQ_API_KEY=""` | allowlist (`PATH`, home/temp dirs, locale, uv cache) + `TRANSCRIBER_PROVIDER=fake`, `GIT_CONFIG_NOSYSTEM=1`, empty `GIT_CONFIG_GLOBAL` (no credential helper), empty `GH_CONFIG_DIR` (no gh login), `GIT_TERMINAL_PROMPT=0`, unreachable `DOCKER_HOST` |
 | **Limits** | one incident at a time; per-command timeouts | `--max-turns 40`, `--max-budget-usd 3`, wall-clock timeout 20 min (process tree killed), `--no-session-persistence` |
 | **Can** | open a PR against the explicit incident base branch (`ONCALL_PR_BASE`, e.g. `chaos/INC-<id>`); redeploy the **local** incident stack | read code, write a failing test, edit `backend/app/**` / `backend/tests/**`, run unit tests and ruff |
 | **Cannot** | deploy to Render dev/prod, merge PRs, open a PR against `main` (no base configured means no push and no PR, the incident escalates) | push, deploy, open PRs, use the network tools, read secrets from the env or `.env` files. A diff outside the allowlist, a planted git hook or config change, or a deleted test is rejected **before** anything is pushed |
@@ -123,15 +123,27 @@ the worktree after the agent finished:
    The reproduction uses the test files **from that commit** on a fresh checkout of the deployed
    code. Ignored files the agent left behind (`.venv`, `sitecustomize.py`, `.env`) cannot
    influence the result, and the app is rebuilt from the same clean checkout.
-5. Only when every check passed is `oncall/INC-<id>` moved to that commit (`git update-ref`) and
-   pushed.
+5. The responder's git commands use a **pinned git config**: a merged copy of the system, XDG and
+   `~/.gitconfig` files, taken before the agent ran (`GIT_CONFIG_GLOBAL=<copy>`,
+   `GIT_CONFIG_NOSYSTEM=1`, verified unchanged before every call). Diff commands add
+   `--no-ext-diff --no-textconv`. Agent edits of `~/.gitconfig` (`diff.external`,
+   `url.*.pushInsteadOf`, aliases) therefore never reach them. The operator's `~/.gitconfig` and
+   XDG `git/config` are also hashed before and after; if they changed, the incident escalates and
+   the file is **reported, not restored** (it belongs to the operator).
+6. Only when every check passed is `oncall/INC-<id>` moved to that commit (`git update-ref`). It is
+   then pushed to the `origin` push URL recorded before the agent ran, and `git ls-remote`
+   verifies that the remote branch has exactly that commit.
 
-**Residual risks (honest list).** The agent runs on the host without an OS sandbox. Code it writes
-runs during `uv run pytest` and could in principle reach the network or read files the operator
-can read, for example by absolute path. The env holds no tokens, git/gh/docker are
-de-credentialed, the worktree is outside the repo, `.env` reads are denied to the tools, the
-added lines are secret-scanned, and a human reviews the PR, which targets a throwaway branch.
-Next step: run the agent and its checks in a container without network or credentials.
+**Residual risks (honest list).** The agent runs on the host, as the operator, without an OS
+sandbox. Code it writes runs during `uv run pytest` and could in principle reach the network or
+read and change files the operator can, for example by absolute path. The environment
+restrictions (no tokens in the env, git/gh/docker pointed at empty config, no docker host) are
+**env-level only**. Code can still call the operator's credential helper or gh keyring by
+absolute path. The detections above make sure that such tampering does not change what the
+responder pushes, and that it is reported. Further mitigations: the worktree is outside the repo,
+`.env` reads are denied to the tools, the added lines are secret-scanned, and a human reviews the
+PR, which targets a throwaway branch. Next step: run the agent and its checks in a container
+without network or credentials.
 
 ## Autonomy policy (enforced in code)
 

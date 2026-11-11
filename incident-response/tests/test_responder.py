@@ -75,7 +75,12 @@ def failing_tests_runner(name: str, argv: list[str]) -> r.CmdResult:
 
 
 def repro_fails(_tests: list[str]) -> r.CmdResult:
-    return r.CmdResult([], 1, "", 0.1)
+    return r.CmdResult([], 1, "1 failed in 0.01s", 0.1)
+
+
+def test_a_crash_with_exit_1_is_not_a_reproduction() -> None:
+    crash = lambda _t: r.CmdResult([], 1, "python: No module named pytest", 0.1)  # noqa: E731
+    assert by_name(evaluate(reproduce=crash))["new_test_fails_before_fix"] is False
 
 
 def evaluate(
@@ -633,6 +638,12 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "init")
 
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".gitconfig").write_text(
+        "[user]\n\tname = Test\n\temail = test@example.invalid\n", encoding="utf-8"
+    )
+
     policy = copy.deepcopy(POLICY)
     pytest_argv = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"]
     policy["checks"].update(
@@ -642,6 +653,7 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         timeout_seconds=120,
     )
     policy["agent"]["timeout_seconds"] = 60
+    policy["publish"]["open_pr"] = False  # tests never call gh
     policy_path = tmp_path / "policy.yaml"
     policy_path.write_text(json.dumps(policy), encoding="utf-8")  # JSON is valid YAML
 
@@ -656,6 +668,10 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "ONCALL_DEPLOY": "0",
         "GROQ_API_KEY": "gsk_must_not_reach_the_agent",
         "ONCALL_STUB_MARKER": str(tmp_path / "hook-marker.txt"),
+        # Never touch the real ~/.gitconfig: the user-level git config lives in a temp home.
+        "HOME": str(home),
+        "USERPROFILE": str(home),
+        "XDG_CONFIG_HOME": str(home / ".config"),
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -672,6 +688,8 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "repo": repo,
         "incidents": tmp_path / "incidents",
         "marker": tmp_path / "hook-marker.txt",
+        "home": home,
+        "tmp": tmp_path,
     }
 
 
@@ -762,6 +780,71 @@ def test_pipeline_planted_git_hooks_never_run_and_escalate(  # QA R1 regression
     assert planted == [], f"planted hooks were not removed: {planted}"
     all_files = _git(repo, "log", "--all", "--name-only", "--format=")
     assert ".github/workflows/evil.yml" not in all_files
+
+
+def _with_origin(sandbox: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """Local bare `origin` and `attacker` repos; publish on with an explicit PR base."""
+    origin, attacker = sandbox["tmp"] / "origin.git", sandbox["tmp"] / "attacker.git"
+    for bare in (origin, attacker):
+        subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    _git(sandbox["repo"], "remote", "add", "origin", origin.as_posix())
+    _git(sandbox["repo"], "push", "-q", "origin", "main")
+    monkeypatch.setenv("ONCALL_PUBLISH", "1")
+    monkeypatch.setenv("ONCALL_PR_BASE", "main")
+    monkeypatch.setenv("ONCALL_STUB_ORIGIN", origin.as_posix())
+    monkeypatch.setenv("ONCALL_STUB_ATTACKER", attacker.as_posix())
+    return origin, attacker
+
+
+def _refs(bare: Path) -> list[str]:
+    out = subprocess.run(
+        ["git", "-C", str(bare), "for-each-ref", "--format=%(refname) %(objectname)"],
+        capture_output=True, text=True, check=True,
+    ).stdout  # fmt: skip
+    return out.split("\n")[:-1]
+
+
+def test_pipeline_pushes_the_approved_commit_to_the_recorded_origin_url(
+    sandbox: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin, attacker = _with_origin(sandbox, monkeypatch)
+    state, folder = run_incident("good_fix", monkeypatch)
+    assert state["status"] == "fix_committed", (folder / "commands.log").read_text("utf-8")
+    assert state["pushed"] is True
+    assert f"refs/heads/{state['branch']} {state['fix_commit']}" in _refs(origin)
+    assert _refs(attacker) == []
+
+
+def test_pipeline_ignores_an_agent_push_redirect_in_the_global_git_config(  # QA F1
+    sandbox: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin, attacker = _with_origin(sandbox, monkeypatch)
+    state, _folder = run_incident("global_insteadof", monkeypatch)
+    assert state["status"] == "escalated"
+    assert "operator git config" in state["escalation_reason"]
+    assert _refs(attacker) == [] and not state.get("pushed")
+    assert not any("oncall/" in ref for ref in _refs(origin))
+    # Reported, not silently restored: the operator's file still has the planted lines.
+    assert "pushInsteadOf" in (sandbox["home"] / ".gitconfig").read_text("utf-8")
+
+
+def test_pipeline_never_runs_an_agent_planted_diff_external(  # QA F1
+    sandbox: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state, _folder = run_incident("global_diff_external", monkeypatch)
+    assert state["status"] == "escalated"
+    assert "operator git config" in state["escalation_reason"]
+    assert not sandbox["marker"].exists(), "diff.external ran"
+
+
+def test_git_refuses_to_run_if_the_pinned_config_changed(tmp_path: Path) -> None:
+    pinned = r.pin_git_config({"HOME": str(tmp_path), "GIT_CONFIG_NOSYSTEM": "1"},
+                              tmp_path / "pinned")  # fmt: skip
+    git = r.Git(tmp_path / "no-hooks", {}, pinned)
+    git.argv(tmp_path)  # unchanged: fine
+    pinned.write_text("[diff]\n\texternal = evil\n", encoding="utf-8")
+    with pytest.raises(r.TamperError):
+        git.argv(tmp_path)
 
 
 def test_pipeline_never_falls_back_to_main_as_pr_base(  # QA S6

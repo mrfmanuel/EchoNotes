@@ -84,7 +84,8 @@ PROM_QUERIES: dict[str, str] = {
 # stack_trace ... are structured metadata (filter after the selector, no `| json`; OTLP maps
 # CRITICAL to FATAL). Verified by #29 in grafana/otel-lgtm:0.40.0.
 LOKI_FALLBACK_QUERIES = (
-    f'{{service_name="{SERVICE}"}} | severity_text=~"ERROR|FATAL"',
+    # WARN: provider 502/504 are logged at WARN; ERROR: unhandled 500s (with stack_trace).
+    f'{{service_name="{SERVICE}"}} | severity_text=~"WARN|ERROR|FATAL"',
     f'{{service_name="{SERVICE}"}} | detected_level="error"',
 )
 TEMPO_TRACEQL = (

@@ -3,7 +3,7 @@
 #
 #   incident-response/runbooks/verify-recovery.sh http://localhost:8001
 #
-# Checks (all must pass, exit 0): health reports EXPECT_COMMIT, fresh traffic (same mix that
+# Checks (all must pass, exit 0): health reports EXPECT_COMMIT, target_info has that revision, fresh traffic (>= 10, same mix that
 # caused the incident) has a 5xx ratio below VERIFY_THRESHOLD, Prometheus' counter delta for that
 # traffic is below the threshold, and scripts/smoke.sh passes. The alert returning to Normal is
 # reported but not required (Grafana needs a few evaluation cycles for the 2 m window).

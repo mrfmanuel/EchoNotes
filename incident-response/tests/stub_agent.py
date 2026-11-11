@@ -178,6 +178,22 @@ def main() -> None:
         write(APP, FIX)
         write(NEW_TEST, TEST + '\n\nLEAKED = "GROQ_API_KEY=gsk_abcdefghijklmnopqrstuv"\n')
         result = answer([APP, NEW_TEST])
+    elif scenario in ("global_diff_external", "global_insteadof"):  # QA F1: ~/.gitconfig
+        write(APP, FIX)
+        write(NEW_TEST, TEST)
+        home = Path(os.environ["HOME"])  # tests point HOME at a temp dir
+        config = home / ".gitconfig"
+        old = config.read_text(encoding="utf-8") if config.exists() else ""
+        if scenario == "global_diff_external":
+            script = home / "extdiff.sh"
+            marker = Path(os.environ["ONCALL_STUB_MARKER"]).as_posix()
+            write(str(script), f'#!/bin/sh\necho "diff.external ran" > "{marker}"\n')
+            extra = f"[diff]\n\texternal = sh {script.as_posix()}\n"
+        else:
+            attacker, origin = os.environ["ONCALL_STUB_ATTACKER"], os.environ["ONCALL_STUB_ORIGIN"]
+            extra = f'[url "{attacker}"]\n\tpushInsteadOf = {origin}\n'
+        write(str(config), old + extra)
+        result = answer([APP, NEW_TEST])
     elif scenario == "escalate":
         result = answer([], action="escalate", confidence=0.2)
     elif scenario == "low_confidence":

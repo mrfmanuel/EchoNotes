@@ -31,6 +31,7 @@ import traffic  # noqa: E402
 FAILED = {"provider_error", "timeout", "server_error"}
 ALERT_TITLE = "EchoNotes transcription failure ratio high"
 COUNTER_QUERY = "sum by (status) (echonotes_transcriptions_total)"
+MIN_REQUESTS = 10
 
 
 def _get(url: str, auth: str | None = None) -> tuple[int, Any]:
@@ -66,6 +67,15 @@ class Grafana:
             for item in body.get("data", {}).get("result", [])
         }
 
+    def revision_present(self, sha: str) -> bool:
+        """The fixed build really exports telemetry (a NoData -> OK flip is not a recovery)."""
+        promql = f'count(target_info{{job="echonotes-api",vcs_ref_head_revision="{sha}"}})'
+        query = urllib.parse.urlencode({"query": promql})
+        status, body = _get(
+            f"{self.url}/api/datasources/proxy/uid/prometheus/api/v1/query?{query}", self.auth
+        )
+        return status == 200 and bool((body or {}).get("data", {}).get("result"))
+
     def alert_state(self) -> str | None:
         status, body = _get(f"{self.url}/api/prometheus/grafana/api/v1/rules", self.auth)
         if status != 200 or not isinstance(body, dict):
@@ -98,6 +108,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--metrics-timeout", type=int, default=120)
     parser.add_argument("--alert-wait", type=int, default=0)
     args = parser.parse_args(argv)
+    # >= 10: the first sample of a NEW series (the rebuilt container) is not counted by
+    # increase(), so a handful of requests looks smaller than it is.
+    args.requests = max(args.requests, MIN_REQUESTS)
     base = args.app_url.rstrip("/")
     ok = True
     out = ["## Recovery checks", "", "| Check | Result | Detail |", "|---|---|---|"]
@@ -154,6 +167,21 @@ def main(argv: list[str] | None = None) -> int:
             f"delta {failed:.0f} failed / {total:.0f} total = {prom_ratio}",
         )
         ok &= prom_ok
+
+    # 3b. the fixed revision is the one exporting telemetry
+    if args.expect_commit:
+        deadline, present = time.monotonic() + args.metrics_timeout, False
+        while time.monotonic() < deadline and not present:
+            present = grafana.revision_present(args.expect_commit)
+            if not present:
+                time.sleep(5)
+        row(
+            "fixed_revision_in_prometheus",
+            present,
+            f'target_info{{job="echonotes-api",vcs_ref_head_revision="{args.expect_commit[:12]}..."}}'
+            + (" present" if present else " missing"),
+        )
+        ok &= present
 
     # 4. alert back to Normal (informational)
     if args.alert_wait > 0:

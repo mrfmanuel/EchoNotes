@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import os
 import queue
@@ -558,6 +559,7 @@ def path_matches(path: str, patterns: Sequence[str]) -> bool:
 
 
 TEST_FUNCTION_RE = re.compile(r"^\s*(?:async\s+)?def\s+test\w*\s*\(", re.MULTILINE)
+PYTEST_FAILED_RE = re.compile(r"\b\d+ failed\b")
 NON_REGULAR_MODES = frozenset({"120000", "160000"})  # symlink, submodule (gitlink)
 
 
@@ -582,24 +584,36 @@ class TamperError(Exception):
     """Agent-controlled code changed git metadata (hooks, config) or the empty hooks dir."""
 
 
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "<missing>"
+
+
 class Git:
     """Every git command of the responder goes through here, never through hooks.
 
     `core.hooksPath` points at an empty directory (verified empty before every call), so hooks
     planted by agent-written code (e.g. via `uv run pytest`) in the shared `.git/hooks` never
     run; `core.fsmonitor=false` blocks a planted fsmonitor command. The environment is minimal
-    (no GROQ_API_KEY, tokens or deploy hooks), but keeps the operator's git config so commits
-    have an identity and `push` can use the credential helper.
+    (no GROQ_API_KEY, tokens or deploy hooks). The user-level git config is PINNED: a copy taken
+    before the agent ran (`GIT_CONFIG_GLOBAL`, `GIT_CONFIG_NOSYSTEM=1`, verified unchanged before
+    every call), so an agent edit of ~/.gitconfig (`diff.external`, `url.*.pushInsteadOf`, ...)
+    never reaches the responder's git commands.
     """
 
-    def __init__(self, hooks_dir: Path, env: dict[str, str]) -> None:
+    def __init__(self, hooks_dir: Path, env: dict[str, str], config: Path | None = None) -> None:
         self.hooks_dir = hooks_dir
-        self.env = env
+        self.env = dict(env)
+        self.config = config
+        self.config_digest = _digest(config) if config else ""
+        if config is not None:
+            self.env.update({"GIT_CONFIG_GLOBAL": str(config), "GIT_CONFIG_NOSYSTEM": "1"})
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
     def argv(self, repo: Path, *args: str) -> list[str]:
         if any(self.hooks_dir.iterdir()):
             raise TamperError(f"the empty hooks dir is not empty: {self.hooks_dir}")
+        if self.config is not None and _digest(self.config) != self.config_digest:
+            raise TamperError(f"the pinned git config was modified: {self.config}")
         return [
             "git",
             "-C",
@@ -630,10 +644,55 @@ class Git:
 
 def tool_env(base: dict[str, str]) -> dict[str, str]:
     """Minimal env for the responder's own git commands (credentials via the git config only)."""
-    names = [n for n in SANDBOX_ENV_ALLOWLIST if n != "ANTHROPIC_API_KEY"] + ["SSH_AUTH_SOCK"]
+    names = [n for n in SANDBOX_ENV_ALLOWLIST if n != "ANTHROPIC_API_KEY"]
+    names += ["SSH_AUTH_SOCK", "XDG_CONFIG_HOME"]
     env = {k: base[k] for k in names if base.get(k)}
     env["GIT_TERMINAL_PROMPT"] = "0"
     return env
+
+
+def user_git_config_files(env: dict[str, str]) -> list[Path]:
+    """The user-level git config files git would read (XDG first, then ~/.gitconfig)."""
+    if env.get("GIT_CONFIG_GLOBAL"):
+        return [Path(env["GIT_CONFIG_GLOBAL"])]
+    home = Path(env.get("HOME") or env.get("USERPROFILE") or Path.home())
+    xdg = Path(env["XDG_CONFIG_HOME"]) if env.get("XDG_CONFIG_HOME") else home / ".config"
+    return [xdg / "git" / "config", home / ".gitconfig"]
+
+
+def system_git_config_files(env: dict[str, str]) -> list[Path]:
+    if env.get("GIT_CONFIG_NOSYSTEM"):
+        return []
+    proc = subprocess.run(
+        ["git", "config", "--system", "--list", "--show-origin"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        check=False,
+    )
+    files: list[Path] = []
+    for line in proc.stdout.splitlines():
+        origin = line.split("\t", 1)[0]
+        if origin.startswith("file:") and Path(origin[5:]) not in files:
+            files.append(Path(origin[5:]))
+    return files
+
+
+def pin_git_config(env: dict[str, str], target: Path) -> Path:
+    """Merge system + user git config (as read BEFORE the agent runs) into `target`.
+
+    The system file keeps e.g. Git for Windows' `credential.helper=manager`, so push still
+    authenticates with `GIT_CONFIG_NOSYSTEM=1`.
+    """
+    parts = []
+    for path in [*system_git_config_files(env), *user_git_config_files(env)]:
+        if path.is_file():
+            parts.append(f"# pinned copy of {path.name}\n".encode() + path.read_bytes() + b"\n")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"".join(parts))
+    return target
 
 
 def git_meta_snapshot(common_dir: Path) -> dict[str, bytes]:
@@ -671,8 +730,10 @@ def diff_changes(git: Git, repo: Path, base: str, head: str | None = None) -> li
     if head is None:
         git.out(repo, "add", "-A", "-N")
     rev = [base] if head is None else [base, head]
-    raw = git.out(repo, "diff", "--raw", "--no-renames", *rev)
-    numstat = git.out(repo, "diff", "--numstat", "--no-renames", *rev)
+    raw = git.out(repo, "diff", "--raw", "--no-renames", "--no-ext-diff", "--no-textconv", *rev)
+    numstat = git.out(
+        repo, "diff", "--numstat", "--no-renames", "--no-ext-diff", "--no-textconv", *rev
+    )
     meta: dict[str, tuple[str, str]] = {}
     for line in raw.splitlines():
         if line.startswith(":") and "\t" in line:
@@ -710,7 +771,9 @@ def diff_changes(git: Git, repo: Path, base: str, head: str | None = None) -> li
 
 def added_lines(git: Git, repo: Path, base: str, head: str) -> str:
     """Only the lines a commit adds (for the secret scan; context lines are existing code)."""
-    patch = git.out(repo, "diff", "-U0", "--no-renames", base, head)
+    patch = git.out(
+        repo, "diff", "-U0", "--no-renames", "--no-ext-diff", "--no-textconv", base, head
+    )
     return "\n".join(
         line[1:]
         for line in patch.splitlines()
@@ -879,8 +942,11 @@ def evaluate_policy(
             checks.append(
                 _check(
                     "new_test_fails_before_fix",
-                    result.exit_code == 1,
-                    f"pytest exit {result.exit_code} on the deployed code (want 1 = failed)",
+                    # exit 1 AND pytest's own "N failed" summary (a crash or a missing pytest
+                    # also exits 1, but is not a reproduction).
+                    result.exit_code == 1 and bool(PYTEST_FAILED_RE.search(result.output)),
+                    f"pytest exit {result.exit_code} on the deployed code (want 1 = failed, "
+                    "with a pytest 'failed' summary)",
                 )
             )
     for name, key in (
@@ -953,7 +1019,13 @@ class Incident:
         self.worktree = cfg.work_dir / f"oncall-{incident_id}"
         self.branch = f"oncall/{incident_id}"
         # All git commands: hooks disabled (empty hooksPath), minimal env (R1).
-        self.gitx = Git(cfg.work_dir / "sandbox" / "no-hooks", tool_env(cfg.env))
+        # BEFORE the agent runs: pin the git config, hash the user's config files (they are only
+        # reported if changed, never restored: they belong to the operator), remember the push URL.
+        sandbox = cfg.work_dir / "sandbox"
+        pinned = pin_git_config(cfg.env, sandbox / f"gitconfig-{incident_id}")
+        self.gitx = Git(sandbox / "no-hooks", tool_env(cfg.env), pinned)
+        self.user_config_before = {str(p): _digest(p) for p in user_git_config_files(cfg.env)}
+        self.push_url = self.gitx.out(cfg.repo, "remote", "get-url", "--push", "origin").strip()
         common = self.gitx.out(cfg.repo, "rev-parse", "--git-common-dir").strip()
         self.common_dir = (cfg.repo / common).resolve() if common else cfg.repo / ".git"
         self.meta_before: dict[str, bytes] = {}
@@ -1124,6 +1196,18 @@ class Incident:
         if changed:
             self.log.note(f"git metadata modified {when}: {changed} (restored)")
             raise TamperError(f"git metadata modified {when}: {changed} (restored, nothing used)")
+        # The operator's own git config: report, do not touch (the responder uses a pinned copy).
+        user_changed = [
+            Path(p).name if Path(p).name != "config" else "git/config (XDG)"
+            for p, digest in self.user_config_before.items()
+            if _digest(Path(p)) != digest
+        ]
+        if user_changed:
+            self.log.note(f"operator git config modified {when}: {user_changed} (NOT restored)")
+            raise TamperError(
+                f"git metadata modified {when}: operator git config {user_changed} changed "
+                "(not restored: review it by hand; the responder only used its pinned copy)"
+            )
 
     def candidate_builder(
         self, deployed: str, answer: dict[str, Any], changes: list[FileChange], models: list[str]
@@ -1191,9 +1275,16 @@ class Incident:
         if base is None:
             raise PipelineError("no PR base branch (set ONCALL_PR_BASE); nothing pushed")
         if pub.get("push_branch"):
-            push = self.git("push", "--no-verify", "-u", "origin", self.branch, cwd=self.worktree)
+            # The explicit URL recorded before the agent ran (pinned config: no insteadOf games).
+            if not self.push_url:
+                raise PipelineError("no push URL for origin; nothing pushed")
+            ref = f"refs/heads/{self.branch}"
+            push = self.git("push", "--no-verify", self.push_url, f"{ref}:{ref}", cwd=self.worktree)
             if push.exit_code != 0:
                 raise PipelineError("git push failed")
+            remote = self.gitx.out(self.cfg.repo, "ls-remote", self.push_url, ref).split()
+            if not remote or remote[0] != self.state.get("fix_commit"):
+                raise PipelineError("pushed branch not found at the expected URL/commit")
             self.save_state(pushed=True)
         if not pub.get("open_pr"):
             return

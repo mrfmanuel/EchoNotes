@@ -160,7 +160,7 @@ Each criterion uses Given/When/Then. "Project page" means the screen of a single
 - **AC1** `GET /api/health` returns `200 {"status":"ok","version":"<semver>","database":"ok"}` when the database is reachable.
 - **AC2** When the database is unreachable, it returns `503` with `"database":"error"` (implemented in M2, #16).
 - **AC3** (M3) The response also includes `commit` and `environment`. `commit` is the deployed git SHA: `RENDER_GIT_COMMIT` if set, else the `GIT_SHA` build arg, else `"unknown"`. `environment` is `APP_ENV` (`local` when unset). Neither field exposes secrets. Deploy workflows use `commit` to verify which SHA is running.
-- **AC4** (M3) The UI footer shows the app version, the 7-character short commit and the environment (e.g. `v0.1.0 · a1b2c3d · dev`), read from `/api/health`.
+- **AC4** (M3) The UI footer shows the app version, the 7-character short commit and the environment (e.g. `v1.0.0 · a1b2c3d · dev`), read from `/api/health`.
 
 ### 3.6 Observability and on-call (M4)
 

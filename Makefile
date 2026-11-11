@@ -24,7 +24,7 @@ help: ## Show the available targets
 # when `up` fails or on Ctrl+C (INT/TERM exit through the trap). The frontend tests run even
 # if the backend tests failed, both results are printed, and the exit code is non-zero if
 # either suite failed.
-test: ## Backend unit + integration (throwaway Postgres) and frontend tests; always tears down
+test: | frontend/node_modules ## Backend unit + integration (throwaway Postgres) and frontend tests + on-call responder tests; always tears down
 	@trap '$(TEST_COMPOSE) down -v' EXIT; \
 	trap 'exit 130' INT TERM; \
 	$(TEST_COMPOSE) up -d --wait testdb; \
@@ -35,10 +35,15 @@ test: ## Backend unit + integration (throwaway Postgres) and frontend tests; alw
 	echo "make test: backend (unit + integration) exit $$backend, frontend exit $$frontend, responder exit $$responder"; \
 	[ $$backend -eq 0 ] && [ $$frontend -eq 0 ] && [ $$responder -eq 0 ]
 
-test-unit: ## Fast tests without Docker: backend unit tests + frontend tests + responder tests
+test-unit: | frontend/node_modules ## Fast tests without Docker: backend unit tests + frontend tests + responder tests
 	cd backend && TRANSCRIBER_PROVIDER=fake uv run pytest -m "not integration"
 	cd frontend && npm test
 	$(RESPONDER_TEST)
+
+# A fresh clone has no frontend/node_modules: install it once (npm ci) before the frontend tools
+# run. Order-only prerequisite, so an existing node_modules is never reinstalled.
+frontend/node_modules:
+	cd frontend && npm ci
 
 # On-call responder (#32). Its tests use a stub agent (never a model, never the network).
 RESPONDER_TEST := uv run --no-project --quiet --python 3.12 --with "pytest>=8" --with "pyyaml>=6,<7" \
@@ -54,7 +59,7 @@ incident: ## Live on-call demo: chaos branch, incident stack (:8001/:3001), resp
 incident-cleanup: ## Remove the incident stack, worktrees, local branches and images
 	bash incident-response/test-incident.sh --cleanup
 
-lint: ## ruff check + format check (backend + incident-response), oxlint, tsc
+lint: | frontend/node_modules ## ruff check + format check (backend + incident-response), oxlint, tsc
 	cd backend && uv run ruff check . && uv run ruff format --check .
 	cd backend && uv run ruff check ../incident-response && uv run ruff format --check ../incident-response
 	cd frontend && npm run lint && npm run typecheck

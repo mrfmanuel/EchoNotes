@@ -141,12 +141,14 @@ sum by (status) (increase(echonotes_exports_total[15m]))
 | Question | LogQL |
 |---|---|
 | All API logs | `{service_name="echonotes-api"}` |
-| Logs of one trace | `{service_name="echonotes-api"} \| trace_id="<32 hex>"` |
+| Logs of one trace | `{service_name="echonotes-api"} \| trace_id="<32 hex>"` (see the note below) |
 | Failed transcriptions with their error class | `{service_name="echonotes-api"} \| severity_text="ERROR" \| exc_type!=""` |
 | Provider failures and timeouts (502/504) | `{service_name="echonotes-api"} \| severity_text="WARN" \| logger="app.services.transcriptions"` |
 | Failure lines per minute | `sum(count_over_time({service_name="echonotes-api"} \| severity_text=~"WARN\|ERROR\|FATAL" [1m]))` |
 | Lines by severity | `sum by (severity_text) (count_over_time({service_name="echonotes-api"}[15m]))` |
 | Access lines of the transcription route | `{service_name="echonotes-api"} \| logger="app.access" \| route="/api/projects/{projectId}/transcriptions"` |
+
+**Finding the logs of a trace:** use `{service_name="echonotes-api"} | trace_id="<id>"`. A free-text search for the trace id (Grafana's search box, or a line filter such as `|= "<id>"`) finds nothing, because `trace_id` is structured metadata and not part of the log line. The same applies to `span_id` and `request_id`.
 
 ## Correlation: metrics → logs → traces
 

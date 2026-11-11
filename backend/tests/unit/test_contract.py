@@ -155,7 +155,7 @@ async def test_health_response_validates_against_the_contract_schema(
 
 
 def test_schema_check_detects_a_missing_or_invalid_field(health_schema: dict[str, Any]) -> None:
-    body = {"status": "ok", "version": "0.1.0", "database": "ok", "environment": "staging"}
+    body = {"status": "ok", "version": "1.0.0", "database": "ok", "environment": "staging"}
 
     assert _schema_violations(body, health_schema) == [
         "missing commit",

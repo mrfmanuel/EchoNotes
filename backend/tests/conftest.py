@@ -28,7 +28,17 @@ BACKEND_ENV_VARS = (
     "STATIC_DIR",
     "RENDER_GIT_COMMIT",
     "GIT_SHA",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_HEADERS",
+    "OTEL_SERVICE_NAME",
+    "OTEL_METRIC_EXPORT_INTERVAL",
+    "OTEL_SEMCONV_STABILITY_OPT_IN",
 )
+# `app.main` builds the app at import time: never let a developer's OTLP endpoint switch
+# telemetry on (and start exporters) while the test modules are being imported (#29).
+for _name in BACKEND_ENV_VARS:
+    if _name.startswith("OTEL_"):
+        os.environ.pop(_name, None)
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:

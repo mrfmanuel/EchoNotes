@@ -26,6 +26,7 @@ from app.services.images import IMAGE_EXTENSIONS
 from app.services.projects import PROJECT_NOT_FOUND
 from app.services.slugs import next_free_slug, slugify
 from app.services.transcript_format import format_duration, render_markdown, render_text
+from app.telemetry import track_export
 
 TRANSCRIPT_FALLBACK = "transcript"
 SCREENSHOT_FALLBACK = "screenshot"
@@ -221,17 +222,27 @@ class ExportArchive:
 
 
 async def export_project(session: AsyncSession, project_id: uuid.UUID) -> ExportArchive:
-    """Build `<slug>.zip` in a spooled temp file (memory first, never a named file)."""
-    project, transcripts, screenshots = await _load_contents(session, project_id)
-    exported_at = datetime.now(UTC)
-    plan = build_plan(project, transcripts, screenshots, exported_at)
-    spool: IO[bytes] = SpooledTemporaryFile(max_size=SPOOL_MAX_MEMORY_BYTES)  # noqa: SIM115
-    try:
-        await write_zip(session, plan, exported_at, spool)
-        size = spool.tell()
-    except BaseException:
-        spool.close()
-        raise
+    """Build `<slug>.zip` in a spooled temp file (memory first, never a named file).
+
+    Traced as `export.build` and counted in `echonotes.exports{status}` (#29)."""
+    with track_export(project_id) as span:
+        project, transcripts, screenshots = await _load_contents(session, project_id)
+        exported_at = datetime.now(UTC)
+        plan = build_plan(project, transcripts, screenshots, exported_at)
+        spool: IO[bytes] = SpooledTemporaryFile(max_size=SPOOL_MAX_MEMORY_BYTES)  # noqa: SIM115
+        try:
+            await write_zip(session, plan, exported_at, spool)
+            size = spool.tell()
+        except BaseException:
+            spool.close()
+            raise
+        span.set_attributes(
+            {
+                "echonotes.transcript_count": len(plan.transcripts),
+                "echonotes.screenshot_count": len(plan.screenshots),
+                "echonotes.export.size_bytes": size,
+            }
+        )
     logger.info(
         "project exported",
         extra={

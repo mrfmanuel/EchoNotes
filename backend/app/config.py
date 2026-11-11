@@ -12,6 +12,7 @@ LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 DEFAULT_DATABASE_URL = "postgresql+psycopg://echonotes:echonotes@localhost:5432/echonotes"
 
 UNKNOWN_COMMIT = "unknown"
+DEFAULT_OTEL_SERVICE_NAME = "echonotes-api"
 
 _URL_PREFIXES = ("postgres://", "postgresql://")
 _PSYCOPG_PREFIX = "postgresql+psycopg://"
@@ -28,7 +29,9 @@ def normalize_database_url(url: str) -> str:
 class Settings(BaseSettings):
     """Backend configuration. Only process environment variables are read (12-factor).
 
-    Variables used by other components (`POSTGRES_*`, `VITE_*`, `OTEL_*`) are ignored.
+    Variables used by other components (`POSTGRES_*`, `VITE_*`) are ignored. Of the `OTEL_*`
+    variables only the ones below are read here; the OTLP exporters read the rest themselves
+    (e.g. `OTEL_EXPORTER_OTLP_HEADERS`, which may hold a credential and is never logged).
     """
 
     model_config = SettingsConfigDict(case_sensitive=False, extra="ignore")
@@ -48,6 +51,11 @@ class Settings(BaseSettings):
     # Deployed commit (US-17 AC3): set by Render at runtime, or by the Docker `GIT_SHA` build arg.
     render_git_commit: str = ""
     git_sha: str = ""
+    # OpenTelemetry (#29). Empty endpoint = telemetry fully off (no SDK, no exporters).
+    # OTLP over http/protobuf, e.g. `http://lgtm:4318`; `/v1/traces` etc. are appended.
+    otel_exporter_otlp_endpoint: str = ""
+    otel_service_name: str = DEFAULT_OTEL_SERVICE_NAME
+    otel_metric_export_interval: int = Field(default=5000, gt=0)  # milliseconds
 
     @field_validator("log_level", mode="before")
     @classmethod
@@ -59,12 +67,23 @@ class Settings(BaseSettings):
     def _empty_static_dir_is_none(cls, value: object) -> object:
         return None if isinstance(value, str) and not value.strip() else value
 
+    @field_validator("otel_service_name", mode="before")
+    @classmethod
+    def _empty_service_name_is_default(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip() or DEFAULT_OTEL_SERVICE_NAME
+        return value
+
     @field_validator("database_url", mode="before")
     @classmethod
     def _normalize_database_url(cls, value: object) -> object:
         if isinstance(value, SecretStr):
             value = value.get_secret_value()
         return normalize_database_url(value) if isinstance(value, str) else value
+
+    @property
+    def telemetry_enabled(self) -> bool:
+        return bool(self.otel_exporter_otlp_endpoint.strip())
 
     @property
     def deployed_commit(self) -> str:

@@ -1,0 +1,70 @@
+# Grafana datasources for the local EchoNotes observability stack (#30).
+# Mounted over the image's own grafana-datasources.yaml (grafana/otel-lgtm), so these FIXED UIDs
+# are the contract for the dashboard, the alert rule and the on-call responder's evidence API:
+#   prometheus, loki, tempo   (e.g. /api/datasources/proxy/uid/prometheus/api/v1/query)
+# All backends run inside the lgtm container; only Grafana is published on the host.
+# `$$` is a literal `$` (Grafana interpolates environment variables in provisioning files).
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    url: http://127.0.0.1:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # The app exports metrics every 5 s (OTEL_METRIC_EXPORT_INTERVAL), so $__rate_interval
+      # can be short and the demo reacts fast.
+      timeInterval: 5s
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+          urlDisplayLabel: "Trace: $${__value.raw}"
+
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    url: http://127.0.0.1:3200
+    editable: false
+    jsonData:
+      # Trace -> logs: "Logs for this span" opens Loki filtered by the span's trace_id.
+      tracesToLogsV2:
+        datasourceUid: loki
+        customQuery: true
+        query: '{service_name="echonotes-api"} | trace_id = "$${__trace.traceId}"'
+        spanStartTimeShift: "-5m"
+        spanEndTimeShift: "5m"
+      tracesToMetrics:
+        datasourceUid: prometheus
+      serviceMap:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+      search:
+        hide: false
+      lokiSearch:
+        datasourceUid: loki
+
+  - name: Loki
+    type: loki
+    uid: loki
+    url: http://127.0.0.1:3100
+    editable: false
+    jsonData:
+      maxLines: 1000
+      # Log -> trace: OTLP logs carry trace_id as structured metadata; show a link to Tempo.
+      derivedFields:
+        - name: trace_id
+          matcherType: label
+          matcherRegex: trace_id
+          datasourceUid: tempo
+          url: "$${__value.raw}"
+          urlDisplayLabel: "Open trace in Tempo"
+
+  # Kept from the image defaults (profiles drilldown expects it); EchoNotes does not send profiles.
+  - name: Pyroscope
+    type: grafana-pyroscope-datasource
+    uid: pyroscope
+    url: http://127.0.0.1:4040
+    editable: false

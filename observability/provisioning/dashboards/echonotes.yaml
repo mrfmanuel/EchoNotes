@@ -1,0 +1,15 @@
+# Dashboard provider (#30): loads observability/dashboard.json (uid `echonotes-journey`) into the
+# "EchoNotes" folder. Added next to the image's own providers (its RED/JVM dashboards stay).
+apiVersion: 1
+
+providers:
+  - name: EchoNotes
+    folder: EchoNotes
+    folderUid: echonotes
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /otel-lgtm/echonotes/dashboard.json
+      foldersFromFilesStructure: false

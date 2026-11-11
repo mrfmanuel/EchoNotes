@@ -2,6 +2,11 @@
 # Works on a fresh clone WITHOUT .env (fake transcriber, local Postgres credentials).
 # `.env` is optional: it can switch TRANSCRIBER_PROVIDER=groq and set GROQ_API_KEY.
 # Data lives in the named volume `pgdata`: kept by `docker compose down`, wiped by `down -v`.
+#
+# Local observability (#30): `make obs-up` adds the `observability` profile (service `lgtm`:
+# OTel Collector + Prometheus + Loki + Tempo + Grafana in one container) and points the app's
+# OTLP exporter at it. Plain `docker compose up --build` starts only db + app, without telemetry.
+# Host ports: APP_PORT (default 8000) and GRAFANA_PORT (default 3000).
 name: echonotes
 
 services:
@@ -29,12 +34,18 @@ services:
         # Baked into the image as ENV GIT_SHA and shown as `commit` in /api/health, e.g.
         # `GIT_SHA=$(git rev-parse HEAD) docker compose up --build`
         GIT_SHA: ${GIT_SHA:-unknown}
-    image: echonotes:local
+    # APP_IMAGE lets a parallel stack (e.g. the incident demo) build its own tag without replacing
+    # the image of the default `echonotes` project. CI uses the default.
+    image: ${APP_IMAGE:-echonotes:local}
     depends_on:
       db:
         condition: service_healthy
+      # Only with the observability profile: start exporting once the collector is ready.
+      lgtm:
+        condition: service_healthy
+        required: false
     ports:
-      - "8000:8000"
+      - "${APP_PORT:-8000}:8000"
     env_file:
       - path: .env
         required: false
@@ -46,8 +57,51 @@ services:
       PORT: "8000"
       TRANSCRIBER_PROVIDER: ${TRANSCRIBER_PROVIDER:-fake}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
+      # Telemetry is off unless `make obs-up` sets OBS_OTLP_ENDPOINT=http://lgtm:4318. A dedicated
+      # variable (not OTEL_EXPORTER_OTLP_ENDPOINT) so a host-dev value in .env cannot leak in here.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OBS_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: echonotes-api
       # No GIT_SHA here on purpose: the image's baked `ENV GIT_SHA` (from the build arg) must win,
       # also for `up --no-build` of a CI-built image (#47).
+
+  # Profile `observability` only (`make obs-up`). Grafana on GRAFANA_PORT (admin/admin, local
+  # only); Prometheus, Loki and Tempo stay inside the container and are reached through Grafana.
+  lgtm:
+    image: grafana/otel-lgtm:0.40.0
+    profiles: [observability]
+    ports:
+      # Loopback only: a local dev tool with a well-known password must not be reachable from
+      # the network. OTLP (4317/4318) is not published; the app sends to lgtm:4318 inside compose.
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    environment:
+      # Local-only credentials (documented in docs/observability.md), not a secret.
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      # The image enables anonymous Admin access by default; require the login instead.
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # Grafana's external URL: dashboardURL/panelURL in alert notifications, {{ externalURL }}.
+      GF_SERVER_ROOT_URL: http://localhost:${GRAFANA_PORT:-3000}
+      # Contact point of the provisioned alert (observability/alerts.yaml): the on-call responder.
+      ONCALL_WEBHOOK_URL: ${ONCALL_WEBHOOK_URL:-http://host.docker.internal:9095/alert}
+      # Set ENABLE_LOGS_GRAFANA=true to see Grafana's own log (e.g. provisioning errors).
+      ENABLE_LOGS_GRAFANA: ${ENABLE_LOGS_GRAFANA:-false}
+    extra_hosts:
+      # host.docker.internal also on Linux (Docker Desktop already provides it).
+      - "host.docker.internal:host-gateway"
+    # Provisioning from observability/ (file mounts; the image's other defaults stay).
+    volumes:
+      - ./observability/provisioning/datasources/datasources.yaml:/otel-lgtm/grafana/conf/provisioning/datasources/grafana-datasources.yaml:ro
+      - ./observability/provisioning/dashboards/echonotes.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/echonotes.yaml:ro
+      - ./observability/dashboard.json:/otel-lgtm/echonotes/dashboard.json:ro
+      - ./observability/alerts.yaml:/otel-lgtm/grafana/conf/provisioning/alerting/echonotes-alerts.yaml:ro
+    healthcheck:
+      # Grafana up and the OTLP receiver ready (the image's own healthcheck runs only every 30 s).
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/api/health >/dev/null && curl -fsS http://127.0.0.1:13133/ready >/dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+      start_period: 10s
+    restart: unless-stopped
 
 volumes:
   pgdata:

@@ -1,0 +1,116 @@
+# Grafana alerting provisioning for EchoNotes (#31): alert on USER IMPACT, never on CPU.
+# Mounted into /otel-lgtm/grafana/conf/provisioning/alerting/ of the lgtm container.
+#
+# Rule: share of failed transcriptions over the last 2 minutes > 20 %, but only when there were at
+# least 5 transcription requests in that window (no paging on a single unlucky request).
+#   failed = status in provider_error (502) | timeout (504) | server_error (500, unhandled bug)
+#   client_error (4xx: bad file, too large, unknown project) is the user's mistake, not an outage.
+# States: below the minimum count the query returns no series -> NoData -> treated as Normal (OK).
+#
+# `$ONCALL_WEBHOOK_URL` (contact point) is interpolated by Grafana from the lgtm service
+# environment in docker-compose.yml. Rule annotations are NOT interpolated (verified on Grafana
+# 13.3): they are Go templates, `{{ externalURL }}` is Grafana's root URL (GF_SERVER_ROOT_URL).
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: echonotes-journey
+    # Own folder title: reusing the dashboard folder's title "EchoNotes" creates a duplicate folder.
+    folder: EchoNotes alerts
+    # Multiple of Grafana's 10 s scheduler tick (brief: 15-30 s).
+    interval: 20s
+    rules:
+      - uid: echonotes-transcription-failure-ratio
+        title: EchoNotes transcription failure ratio high
+        condition: C
+        data:
+          # A: failure ratio over 2 m, only when >= 5 transcriptions happened in that window.
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 300
+              to: 0
+            model:
+              refId: A
+              instant: true
+              range: false
+              intervalMs: 20000
+              maxDataPoints: 43200
+              expr: >-
+                (
+                  (sum(increase(echonotes_transcriptions_total{status=~"provider_error|timeout|server_error"}[2m])) or on() vector(0))
+                  /
+                  sum(increase(echonotes_transcriptions_total[2m]))
+                )
+                and on()
+                (sum(increase(echonotes_transcriptions_total[2m])) >= 5)
+          # B: one number per evaluation.
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              settings:
+                mode: dropNN
+          # C: the alert condition, ratio > 0.2 (20 %).
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0.2]
+        # Pending for 30 s before Firing (brief: pending <= 1 m).
+        for: 30s
+        # Fewer than 5 requests (no series) is not an incident.
+        noDataState: OK
+        # A Prometheus query error keeps the last state instead of paging with DatasourceError.
+        execErrState: KeepLast
+        isPaused: false
+        labels:
+          severity: page
+          journey: transcription
+        annotations:
+          summary: >-
+            {{ if $values.B }}{{ humanizePercentage $values.B.Value }}{{ end }} of transcriptions
+            failed in the last 2 minutes (threshold 20 %, at least 5 requests).
+          description: >-
+            Users cannot turn audio into transcripts. Failed = provider_error, timeout or
+            server_error in echonotes_transcriptions_total. Follow the runbook.
+          runbook_url: https://github.com/mrfmanuel/EchoNotes/blob/main/docs/runbooks/transcription-failures.md
+          dashboard_url: "{{ externalURL }}d/echonotes-journey/echonotes-key-journey"
+          __dashboardUid__: echonotes-journey
+          __panelId__: "7"
+
+contactPoints:
+  - orgId: 1
+    name: echonotes-oncall-webhook
+    receivers:
+      - uid: echonotes-oncall-webhook
+        type: webhook
+        disableResolveMessage: false
+        settings:
+          # Local on-call responder (incident-response/responder.py) on the host.
+          # Default http://host.docker.internal:9095/alert, override with ONCALL_WEBHOOK_URL.
+          url: $ONCALL_WEBHOOK_URL
+          httpMethod: POST
+
+policies:
+  - orgId: 1
+    receiver: echonotes-oncall-webhook
+    group_by: [grafana_folder, alertname]
+    group_wait: 5s
+    group_interval: 1m
+    repeat_interval: 4h
+    routes:
+      - receiver: echonotes-oncall-webhook
+        object_matchers:
+          - [journey, "=", transcription]
+        group_wait: 5s
+        group_interval: 1m
+        repeat_interval: 4h

@@ -160,7 +160,7 @@ describe('API client (follows openapi.yaml)', () => {
   })
 
   it('getHealth returns the body of a 503 (database down)', async () => {
-    const body = { status: 'degraded', version: '0.1.0', database: 'error' }
+    const body = { status: 'degraded', version: '1.0.0', database: 'error' }
     const { client } = setup(jsonResponse(503, body))
 
     await expect(client.getHealth()).resolves.toEqual(body)

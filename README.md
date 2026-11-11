@@ -20,6 +20,8 @@ Final project for the [AI Dev Tools Zoomcamp 2026](https://courses.datatalks.clu
 
 ## How to review this project in 10 minutes
 
+**Prerequisites for the local steps:** Docker, GNU make, [uv](https://docs.astral.sh/uv/), Node 20+ and, on Windows, Git Bash. `gh` and `claude` (both logged in) are needed only for `make incident`. `make test` installs the frontend dependencies (`npm ci`) on its first run.
+
 | Minute | What | Where |
 |---|---|---|
 | 1 | **Use the live app** (no login, so don't upload sensitive audio): create a project, upload or record audio, edit the transcript, export a ZIP. The footer shows the deployed version and commit | <https://echonotes-prod.onrender.com> (first load may take about 60 s) · [`/api/health`](https://echonotes-prod.onrender.com/api/health) |

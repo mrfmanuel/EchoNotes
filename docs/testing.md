@@ -36,6 +36,8 @@ The contract test allows exactly one difference: FastAPI adds an automatic `422`
 # (tmpfs, compose project "echonotes-test"), runs backend unit + integration tests, then the
 # frontend tests even if the backend failed, prints both exit codes, ALWAYS runs `down -v`
 # (also on failure and Ctrl+C), and exits non-zero if either suite failed.
+# On a fresh clone `make test`, `make test-unit` and `make lint` first run `npm ci` in frontend/
+# (only when frontend/node_modules is missing); uv creates backend/.venv on its own.
 make test
 
 make test-unit             # no Docker: backend `pytest -m "not integration"` + frontend tests

@@ -3,7 +3,7 @@ import type { Health } from '../api/types'
 const SHORT_COMMIT_LENGTH = 7
 const UNKNOWN_COMMIT = 'unknown'
 
-/** `v0.1.0 · a1b2c3d · dev` (US-17 AC4). An `unknown` (or empty) commit is shown as `unknown`. */
+/** `v1.0.0 · a1b2c3d · dev` (US-17 AC4). An `unknown` (or empty) commit is shown as `unknown`. */
 export function formatBuildInfo(health: Pick<Health, 'version' | 'commit' | 'environment'>): string {
   const commit =
     health.commit && health.commit !== UNKNOWN_COMMIT

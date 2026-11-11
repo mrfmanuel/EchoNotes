@@ -14,8 +14,11 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import StaticPool
 
 from app.config import get_settings
+from app.telemetry import instrument_engine
 
 POSTGRES_CONNECT_TIMEOUT_SECONDS = 5
+# Telemetry labels the pool by this name instead of `driver://host:port/db` (#29).
+POOL_LOGGING_NAME = "echonotes"
 
 
 def _enable_sqlite_foreign_keys(dbapi_connection: Any, _record: Any) -> None:
@@ -25,18 +28,26 @@ def _enable_sqlite_foreign_keys(dbapi_connection: Any, _record: Any) -> None:
 
 
 def create_engine(url: str) -> AsyncEngine:
-    """Create an async engine. SQLite (unit tests): foreign keys on, one shared connection."""
+    """Create an async engine. SQLite (unit tests): foreign keys on, one shared connection.
+
+    Traced by SQLAlchemy instrumentation when telemetry is on (#29)."""
     if url.startswith("sqlite"):
         engine = create_async_engine(
-            url, connect_args={"check_same_thread": False}, poolclass=StaticPool
+            url,
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+            pool_logging_name=POOL_LOGGING_NAME,
         )
         event.listen(engine.sync_engine, "connect", _enable_sqlite_foreign_keys)
-        return engine
-    return create_async_engine(
-        url,
-        pool_pre_ping=True,
-        connect_args={"connect_timeout": POSTGRES_CONNECT_TIMEOUT_SECONDS},
-    )
+    else:
+        engine = create_async_engine(
+            url,
+            pool_pre_ping=True,
+            pool_logging_name=POOL_LOGGING_NAME,
+            connect_args={"connect_timeout": POSTGRES_CONNECT_TIMEOUT_SECONDS},
+        )
+    instrument_engine(engine)
+    return engine
 
 
 def create_sessionmaker(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

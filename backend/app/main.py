@@ -14,6 +14,7 @@ from app.event_loop import UVICORN_LOOP_OPTION, is_proactor_loop, use_selector_e
 from app.logging import configure_logging
 from app.middleware import RequestContextMiddleware
 from app.spa import mount_spa
+from app.telemetry import setup_telemetry
 from app.transcription import build_transcriber
 
 # Windows (#41): before any loop exists, make asyncio hand out selector loops (no-op elsewhere).
@@ -32,10 +33,12 @@ def warn_if_proactor_loop() -> None:
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     warn_if_proactor_loop()
     yield
     await dispose_engine()
+    if app.state.telemetry is not None:
+        app.state.telemetry.shutdown()  # flush the last spans, metrics and logs
 
 
 def create_app() -> FastAPI:
@@ -55,6 +58,8 @@ def create_app() -> FastAPI:
     app.include_router(exports.router)
     # Keep last: the SPA catch-all must come after every API router.
     mount_spa(app, settings.static_dir)
+    # Off (None) unless OTEL_EXPORTER_OTLP_ENDPOINT is set; before the first request on purpose.
+    app.state.telemetry = setup_telemetry(app, settings)
     return app
 
 

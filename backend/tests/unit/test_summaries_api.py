@@ -385,23 +385,58 @@ async def test_gemini_overloaded_on_both_models_ends_provider_error(
         seen.append(request.url.path.rsplit("/", 1)[-1])
         return httpx2.Response(status, json={"error": {"status": "UNAVAILABLE"}})
 
-    use(
-        app,
-        GeminiSummarizer(
-            api_key=SecretStr("test-key"),
-            base_url="https://gemini.invalid/v1beta",
-            model="flash",
-            fallback_model="flash-lite",
-            timeout_seconds=5,
-            transport=httpx2.MockTransport(handler),
-        ),
-    )
+    use(app, _mock_gemini(handler))
     project_id = await project_with_transcript(client)
 
     summary = await generate(app, client, project_id)
 
     assert seen == ["flash:generateContent", "flash-lite:generateContent"]
     assert summary["status"] == "failed" and summary["error_code"] == "provider_error"
+
+
+def _mock_gemini(handler: Any) -> GeminiSummarizer:
+    return GeminiSummarizer(
+        api_key=SecretStr("test-key"),
+        base_url="https://gemini.invalid/v1beta",
+        model="flash",
+        fallback_model="flash-lite",
+        timeout_seconds=5,
+        primary_timeout_seconds=0.1,
+        transport=httpx2.MockTransport(handler),
+    )
+
+
+async def test_gemini_primary_timeout_falls_back_and_the_summary_records_the_fallback_model(
+    app: FastAPI, client: httpx2.AsyncClient
+) -> None:
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        if "/models/flash:" in str(request.url):
+            await asyncio.sleep(30)  # the primary model hangs past GEMINI_PRIMARY_TIMEOUT_SECONDS
+        return httpx2.Response(
+            200, json={"candidates": [{"content": {"parts": [{"text": "<h1>Lite</h1>"}]}}]}
+        )
+
+    use(app, _mock_gemini(handler))
+    project_id = await project_with_transcript(client)
+
+    summary = await generate(app, client, project_id)
+
+    assert summary["status"] == "succeeded" and summary["model"] == "flash-lite"
+    assert summary["provider"] == "gemini" and "<h1>Lite</h1>" in summary["html"]
+
+
+async def test_gemini_timeout_on_both_models_ends_provider_timeout(
+    app: FastAPI, client: httpx2.AsyncClient
+) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ReadTimeout("slow", request=request)
+
+    use(app, _mock_gemini(handler))
+    project_id = await project_with_transcript(client)
+
+    summary = await generate(app, client, project_id)
+
+    assert summary["status"] == "failed" and summary["error_code"] == "provider_timeout"
 
 
 async def test_a_provider_slower_than_the_timeout_ends_provider_timeout(

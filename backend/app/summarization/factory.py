@@ -43,6 +43,7 @@ def build_summarizer(settings: Settings) -> Summarizer:
             model=settings.gemini_model,
             fallback_model=settings.gemini_fallback_model,
             timeout_seconds=settings.summary_timeout_seconds,
+            primary_timeout_seconds=settings.gemini_primary_timeout_seconds,
         )
     if not _has(settings.groq_api_key.get_secret_value()):
         raise SummarizerConfigError(

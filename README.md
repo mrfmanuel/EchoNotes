@@ -111,6 +111,7 @@ Every deploy targets an exact commit, waits until `/api/health` reports it, then
 | Whole system (app + Postgres) | `docker compose up --build` (or `make up`) → <http://localhost:8000>; stop with `docker compose down` (keeps data) or `docker compose down -v` (wipes it). No `.env` needed: it uses the fake transcriber and a local Postgres. | ✅ available |
 | Backend only | `cd backend && uv sync && uv run alembic upgrade head && uv run uvicorn app.main:app --loop app.event_loop:new_event_loop --reload --port 8000` → <http://localhost:8000/api/health> (needs Postgres at `DATABASE_URL`; add `--env-file ../.env` after `uv run` to load `.env`). `--loop app.event_loop:new_event_loop` is required on native Windows (psycopg cannot use the default Proactor loop, see #41) and harmless elsewhere; `--reload` is optional. | ✅ available |
 | Frontend dev server | `cd frontend && npm ci && npm run dev` → <http://localhost:5173> (proxies `/api` to the backend on :8000) | ✅ available |
+| With observability (Grafana LGTM) | `make obs-up` → app <http://localhost:8000> + Grafana <http://localhost:3000> (admin/admin, local only), dashboard *EchoNotes key journey*, alert *EchoNotes transcription failure ratio high*; stop with `make obs-down`. See [docs/observability.md](docs/observability.md) | ✅ available |
 | Smoke test of a running stack | `make smoke` or `bash scripts/smoke.sh http://localhost:8000` (health → project → upload → transcript → screenshot → export ZIP → cleanup) | ✅ available |
 
 Transcription uses `TRANSCRIBER_PROVIDER=fake` by default. For real transcripts, set `TRANSCRIBER_PROVIDER=groq` and `GROQ_API_KEY` in `.env` (never commit it).
@@ -137,7 +138,7 @@ One command for backend unit + integration (throwaway Postgres on port 55432) + 
 | [docs/testing.md](docs/testing.md) | Test pyramid, suites, counts and commands |
 | [docs/deployment.md](docs/deployment.md) | Architecture, environments (Render + Neon), secrets, setup, free-tier caveats, migrations |
 | [docs/release-process.md](docs/release-process.md) | Dev → prod promotion, approval gate, rollback, evidence runs |
-| [docs/observability.md](docs/observability.md) | Telemetry, alerts, on-call (*planned P4*) and privacy rules |
+| [docs/observability.md](docs/observability.md) | Telemetry, local Grafana stack, dashboard, alert, evidence API and privacy rules; runbook: [docs/runbooks/transcription-failures.md](docs/runbooks/transcription-failures.md) |
 | [docs/ai-usage-report.md](docs/ai-usage-report.md) | How AI tools and agents were used |
 | [prompts/](prompts/) | The prompts given to Claude Code |
 

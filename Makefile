@@ -5,9 +5,17 @@ SHELL := bash
 
 TEST_COMPOSE := docker compose -f docker-compose.test.yml
 SMOKE_URL ?= http://localhost:8000
+# Host ports come from the environment (docker-compose.yml defaults: 8000 / 3000), e.g.
+# `APP_PORT=8001 GRAFANA_PORT=3001 make obs-up`. Only used here to print the URLs.
+SHOW_APP_PORT = $(or $(APP_PORT),8000)
+SHOW_GRAFANA_PORT = $(or $(GRAFANA_PORT),3000)
+# Observability stack (#30): the `observability` profile adds the lgtm container and points the
+# app's OTLP exporter at it. Plain `docker compose up` stays without telemetry.
+OBS_COMPOSE := OBS_OTLP_ENDPOINT=http://lgtm:4318 docker compose --profile observability
 TEST_DATABASE_URL ?= postgresql+psycopg://echonotes_test:echonotes_test@localhost:55432/echonotes_test
 
-.PHONY: help test test-unit test-backend test-frontend lint up down smoke testdb-up testdb-down
+.PHONY: help test test-unit test-backend test-frontend lint up down smoke testdb-up testdb-down \
+	obs-up obs-down
 
 help: ## Show the available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -42,3 +50,12 @@ down: ## Stop the whole stack (keeps the database volume; use `docker compose do
 
 smoke: ## End-to-end smoke test of the key journey against SMOKE_URL (default http://localhost:8000)
 	bash scripts/smoke.sh '$(SMOKE_URL)'
+
+obs-up: ## App + Postgres + Grafana LGTM (Collector, Prometheus, Loki, Tempo); prints the URLs
+	GIT_SHA=$$(git rev-parse HEAD 2>/dev/null || echo unknown) $(OBS_COMPOSE) up --build -d --wait
+	@echo "App:       http://localhost:$(SHOW_APP_PORT)"
+	@echo "Grafana:   http://localhost:$(SHOW_GRAFANA_PORT)  (admin/admin, local only)"
+	@echo "Dashboard: http://localhost:$(SHOW_GRAFANA_PORT)/d/echonotes-journey"
+
+obs-down: ## Stop app, Postgres and the observability stack (keeps the database volume)
+	$(OBS_COMPOSE) down

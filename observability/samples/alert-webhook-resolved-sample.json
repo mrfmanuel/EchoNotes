@@ -1,0 +1,67 @@
+{
+  "receiver": "echonotes-oncall-webhook",
+  "status": "resolved",
+  "alerts": [
+    {
+      "status": "resolved",
+      "labels": {
+        "alertname": "EchoNotes transcription failure ratio high",
+        "grafana_folder": "EchoNotes alerts",
+        "journey": "transcription",
+        "severity": "page"
+      },
+      "annotations": {
+        "dashboard_url": "http://localhost:3000/d/echonotes-journey/echonotes-key-journey",
+        "datasource_uid": "prometheus",
+        "description": "Users cannot turn audio into transcripts. Failed = provider_error, timeout or server_error in echonotes_transcriptions_total. Follow the runbook.",
+        "grafana_state_reason": "NoData",
+        "ref_id": "A",
+        "runbook_url": "https://github.com/mrfmanuel/EchoNotes/blob/main/docs/runbooks/transcription-failures.md",
+        "summary": "62.5% of transcriptions failed in the last 2 minutes (threshold 20 %, at least 5 requests)."
+      },
+      "startsAt": "2026-11-11T01:48:30Z",
+      "endsAt": "2026-11-11T01:52:10Z",
+      "generatorURL": "http://localhost:3000/alerting/grafana/echonotes-transcription-failure-ratio/view?orgId=1",
+      "fingerprint": "dcedafa3246b9baf",
+      "silenceURL": "http://localhost:3000/alerting/silence/new?alertmanager=grafana&matcher=__alert_rule_uid__%3Dechonotes-transcription-failure-ratio&matcher=journey%3Dtranscription&matcher=severity%3Dpage&orgId=1",
+      "dashboardURL": "http://localhost:3000/d/echonotes-journey?from=1794358110000&orgId=1&to=1794361930000",
+      "panelURL": "http://localhost:3000/d/echonotes-journey?from=1794358110000&orgId=1&to=1794361930000&viewPanel=7",
+      "ruleUID": "echonotes-transcription-failure-ratio",
+      "values": {
+        "A": -1,
+        "B": -1,
+        "C": -1
+      },
+      "valueString": "",
+      "orgId": 1
+    }
+  ],
+  "groupLabels": {
+    "alertname": "EchoNotes transcription failure ratio high",
+    "grafana_folder": "EchoNotes alerts"
+  },
+  "commonLabels": {
+    "alertname": "EchoNotes transcription failure ratio high",
+    "grafana_folder": "EchoNotes alerts",
+    "journey": "transcription",
+    "severity": "page"
+  },
+  "commonAnnotations": {
+    "dashboard_url": "http://localhost:3000/d/echonotes-journey/echonotes-key-journey",
+    "datasource_uid": "prometheus",
+    "description": "Users cannot turn audio into transcripts. Failed = provider_error, timeout or server_error in echonotes_transcriptions_total. Follow the runbook.",
+    "grafana_state_reason": "NoData",
+    "ref_id": "A",
+    "runbook_url": "https://github.com/mrfmanuel/EchoNotes/blob/main/docs/runbooks/transcription-failures.md",
+    "summary": "62.5% of transcriptions failed in the last 2 minutes (threshold 20 %, at least 5 requests)."
+  },
+  "externalURL": "http://localhost:3000/",
+  "appVersion": "13.3.0",
+  "version": "1",
+  "groupKey": "{}/{journey=\"transcription\"}:{alertname=\"EchoNotes transcription failure ratio high\", grafana_folder=\"EchoNotes alerts\"}",
+  "truncatedAlerts": 0,
+  "orgId": 1,
+  "title": "[RESOLVED] EchoNotes transcription failure ratio high EchoNotes alerts (transcription page)",
+  "state": "ok",
+  "message": "**Resolved**\n\nValue: A=-1, B=-1, C=-1\nLabels:\n - alertname = EchoNotes transcription failure ratio high\n - grafana_folder = EchoNotes alerts\n - journey = transcription\n - severity = page\nAnnotations:\n - dashboard_url = http://localhost:3000/d/echonotes-journey/echonotes-key-journey\n - datasource_uid = prometheus\n - description = Users cannot turn audio into transcripts. Failed = provider_error, timeout or server_error in echonotes_transcriptions_total. Follow the runbook.\n - grafana_state_reason = NoData\n - ref_id = A\n - runbook_url = https://github.com/mrfmanuel/EchoNotes/blob/main/docs/runbooks/transcription-failures.md\n - summary = 62.5% of transcriptions failed in the last 2 minutes (threshold 20 %, at least 5 requests).\nSource: http://localhost:3000/alerting/grafana/echonotes-transcription-failure-ratio/view?orgId=1\nSilence: http://localhost:3000/alerting/silence/new?alertmanager=grafana&matcher=__alert_rule_uid__%3Dechonotes-transcription-failure-ratio&matcher=journey%3Dtranscription&matcher=severity%3Dpage&orgId=1\nDashboard: http://localhost:3000/d/echonotes-journey?from=1794358110000&orgId=1&to=1794361930000\nPanel: http://localhost:3000/d/echonotes-journey?from=1794358110000&orgId=1&to=1794361930000&viewPanel=7\n"
+}

@@ -1,0 +1,12 @@
+diff --git a/backend/app/services/transcriptions.py b/backend/app/services/transcriptions.py
+index 9d51688..1068cdb 100644
+--- a/backend/app/services/transcriptions.py
++++ b/backend/app/services/transcriptions.py
+@@ -89,4 +89,7 @@ async def _transcribe(
+         ) from None
+     elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
++    if result.duration_seconds is not None:
++        # Real-time factor: seconds of processing per second of audio (lower is faster).
++        log_fields["realtime_factor"] = round(elapsed_ms / 1000 / result.duration_seconds, 4)
+     logger.info("transcription finished", extra={**log_fields, "transcribe_ms": elapsed_ms})
+     return result.text, result.language or language, result.duration_seconds

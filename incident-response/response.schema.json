@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mrfmanuel/EchoNotes/incident-response/response.schema.json",
+  "title": "On-call agent response",
+  "description": "What the headless agent must return. Validated by responder.py before any policy check.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "root_cause",
+    "evidence_used",
+    "files_changed",
+    "tests_added",
+    "confidence",
+    "proposed_action",
+    "summary"
+  ],
+  "properties": {
+    "root_cause": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 2000,
+      "description": "The defect, with file and line, and why it only hits some requests."
+    },
+    "evidence_used": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": { "type": "string", "minLength": 3, "maxLength": 500 },
+      "description": "Which evidence.json entries (metric, log line, trace id, commit) support the root cause."
+    },
+    "files_changed": {
+      "type": "array",
+      "maxItems": 10,
+      "items": { "type": "string", "minLength": 1, "maxLength": 300 },
+      "description": "Repo-relative paths the agent edited (POSIX separators)."
+    },
+    "tests_added": {
+      "type": "array",
+      "maxItems": 10,
+      "items": { "type": "string", "minLength": 1, "maxLength": 300 },
+      "description": "Test node ids that reproduce the failure, e.g. backend/tests/unit/test_x.py::test_y."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "0..1, how sure the agent is that the change fixes the user impact."
+    },
+    "proposed_action": {
+      "type": "string",
+      "enum": ["apply_fix", "escalate"]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 1000,
+      "description": "One paragraph for the PR body and the incident report."
+    }
+  }
+}

@@ -1,6 +1,6 @@
 # Testing Strategy
 
-> Status: implemented for M2 (#23). Every suite below exists, runs with one command (`make test`) and runs in CI on every PR.
+> Status: implemented (M2 #23; telemetry tests #29, responder tests #32). Every suite below exists, runs with one command (`make test`) and runs in CI on every PR.
 
 ## Test pyramid
 

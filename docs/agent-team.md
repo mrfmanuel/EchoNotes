@@ -45,7 +45,7 @@ flowchart LR
 5. **Merge.** If CI is green **and** QA approved, the tech lead squash-merges (`gh pr merge --squash --delete-branch`). The `Closes #N` keyword closes the issue. If QA rejects, the PR goes back to step 2 with the QA comment as input.
 6. **Evidence.** The closed issue links to its PR, the QA report and the CI run. For work done outside a PR (docs-only changes on `main`), the tech lead closes the issue with a comment that lists what was done and the commit SHA.
 7. **Deploy** (from M3). Merging to `main` deploys to **dev** automatically. The `devops-sre` (or the human) promotes to **prod** manually. See [release-process.md](release-process.md).
-8. **Operate** (from M4). A user-impact alert wakes the on-call responder agent, which diagnoses the problem with the runbook, opens an incident issue and, when it can, opens a fix PR that goes through the same QA/CI gate. See [observability.md](observability.md).
+8. **Operate** (from M4). A user-impact alert wakes the on-call responder agent (headless Claude Code). It writes an incident folder (`incident-response/incidents/INC-*`: evidence, agent response, policy decision, report) and either opens a fix PR after the autonomy policy passes (CI runs on it; a human decides the merge) or writes `escalation.md`. See [on-call.md](on-call.md) and [observability.md](observability.md).
 
 ## How the tech lead dispatches agents
 

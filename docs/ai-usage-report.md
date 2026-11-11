@@ -221,7 +221,7 @@ How AI tools were used to build EchoNotes, what the agents did, and what a human
 ## Retrospective (P0–P4)
 
 **What worked**
-- **Issue-first, with an independent QA agent.** Every PR had a QA report. QA requested changes on 6 PRs (#38, #50, #52 twice, #53, plus the security follow-up) and each time found something real: missing error states, a commit hidden by compose, a git-hook bypass, a fake recovery. A separate verifier with a fresh context and a skeptical brief was the most valuable role on the team.
+- **Issue-first, with an independent QA agent.** Every PR had a QA report. QA requested changes on 4 PRs (#38, #50, #52, #53; #52 three rounds including a security follow-up) and each time found something real: missing error states, a commit hidden by compose, a git-hook bypass, a fake recovery. A separate verifier with a fresh context and a skeptical brief was the most valuable role on the team.
 - **Binding briefs plus file ownership** let 3 engineers work in parallel without stepping on each other. The handful of merge conflicts were trivial.
 - **Verifying against the real thing:**
   - real Postgres in the tests;

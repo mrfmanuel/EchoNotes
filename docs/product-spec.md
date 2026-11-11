@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | **Approved for M4 implementation** (v1.1, 2026-11-10: added §3.6 US-18–US-21 and NFR-Observability) |
+| Status | **Delivered** (v1.1, M1–M4 complete; US-18–US-21 and NFR-Observability added 2026-11-10) |
 | Owner | `product-manager` agent (see [agent-team.md](agent-team.md)) |
 | API contract | [`openapi.yaml`](../openapi.yaml) (OpenAPI 3.1) |
 | Tracker | [GitHub Issues](https://github.com/mrfmanuel/EchoNotes/issues) · [Milestones](https://github.com/mrfmanuel/EchoNotes/milestones) |
@@ -158,7 +158,7 @@ Each criterion uses Given/When/Then. "Project page" means the screen of a single
 <a id="us-17"></a>
 #### US-17 — Health endpoint
 - **AC1** `GET /api/health` returns `200 {"status":"ok","version":"<semver>","database":"ok"}` when the database is reachable.
-- **AC2** When the database is unreachable, it returns `503` with `"database":"error"` (planned for M2, when the DB exists; the M1 skeleton returns `"database":"skipped"`).
+- **AC2** When the database is unreachable, it returns `503` with `"database":"error"` (implemented in M2, #16).
 - **AC3** (M3) The response also includes `commit` and `environment`. `commit` is the deployed git SHA: `RENDER_GIT_COMMIT` if set, else the `GIT_SHA` build arg, else `"unknown"`. `environment` is `APP_ENV` (`local` when unset). Neither field exposes secrets. Deploy workflows use `commit` to verify which SHA is running.
 - **AC4** (M3) The UI footer shows the app version, the 7-character short commit and the environment (e.g. `v0.1.0 · a1b2c3d · dev`), read from `/api/health`.
 

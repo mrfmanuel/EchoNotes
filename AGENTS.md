@@ -27,7 +27,7 @@ Subagent definitions are in [`.claude/agents/`](.claude/agents/).
 
 ## Stack
 
-- **Backend:** Python 3.12, FastAPI, SQLAlchemy 2 + Alembic (from M2), Postgres; managed with **uv**; tested with pytest; linted and formatted with ruff
+- **Backend:** Python 3.12, FastAPI, SQLAlchemy 2 + Alembic, Postgres; managed with **uv**; tested with pytest; linted and formatted with ruff
 - **Frontend:** React 19 + TypeScript (strict) + Vite; tested with Vitest + Testing Library (jsdom); linted with oxlint
 - **Infra:** Docker / docker compose, GitHub Actions CI/CD, Render dev + prod with Neon Postgres, OpenTelemetry → Grafana LGTM, on-call responder (headless Claude Code)
 
@@ -39,7 +39,7 @@ frontend/           Vite React TS app (src/), vitest tests next to components
 docs/               modular project docs (see table above)
 openapi.yaml        API contract
 .claude/agents/     subagent definitions (product-manager, software-engineer, qa-engineer, devops-sre)
-.github/workflows/  CI (and CD from M3)
+.github/workflows/  CI, deploy-dev / deploy-prod / rollback
 prompts/            the prompts given to Claude Code (evidence of AI usage)
 ```
 

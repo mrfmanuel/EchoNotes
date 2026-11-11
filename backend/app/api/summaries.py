@@ -51,14 +51,15 @@ async def create_summary(
     factory: SessionFactoryDep,
     summarizer: SummarizerDep,
 ) -> schemas.Summary:
-    summary, created = await service.start_summary(session, project_id, summarizer.name)
+    settings = get_settings()
+    summary, created = await service.start_summary(
+        session, project_id, summarizer.name, service.stale_after(settings)
+    )
     response = schemas.to_summary(summary)
     # Release the request's connection before the job opens its own sessions.
     await session.close()
     if created:
-        service.schedule_summary(
-            summary_tasks(request), factory, summarizer, summary, get_settings()
-        )
+        service.schedule_summary(summary_tasks(request), factory, summarizer, summary, settings)
     return response
 
 
@@ -69,7 +70,8 @@ async def create_summary(
     responses={status.HTTP_404_NOT_FOUND: NOT_FOUND},
 )
 async def get_latest_summary(project_id: ProjectIdPath, session: SessionDep) -> schemas.Summary:
-    return schemas.to_summary(await service.latest_summary(session, project_id))
+    max_age = service.stale_after(get_settings())
+    return schemas.to_summary(await service.latest_summary(session, project_id, max_age))
 
 
 @router.get(

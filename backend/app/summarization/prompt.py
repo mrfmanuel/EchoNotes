@@ -28,7 +28,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 from app.summarization.base import SummaryImage, SummaryRequest
 
@@ -162,8 +162,8 @@ def downscale_image(data: bytes, max_px: int) -> tuple[str, bytes] | None:
     or has more than `MAX_IMAGE_PIXELS` pixels (checked from the header, before decoding).
 
     Memory: one image is decoded at a time process-wide (`_DECODE_LOCK`, this runs in a worker
-    thread), JPEGs are decoded at a reduced scale (`draft`), and the decoded image is resized in
-    place and closed when done (no copies).
+    thread), JPEGs are decoded at a reduced scale (`draft`), the EXIF orientation is applied, and
+    the decoded image is rotated and resized in place and closed when done (no copies).
     """
     with _DECODE_LOCK:
         try:
@@ -172,6 +172,7 @@ def downscale_image(data: bytes, max_px: int) -> tuple[str, bytes] | None:
                     return None
                 if image.format == "JPEG":
                     image.draft("RGB", (max_px, max_px))
+                ImageOps.exif_transpose(image, in_place=True)  # upright before downscaling
                 image.thumbnail((max_px, max_px))
                 return _encode(image)
         except (OSError, ValueError, SyntaxError, Image.DecompressionBombError):

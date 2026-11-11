@@ -1,7 +1,8 @@
 """Google Gemini summarizer: REST `models/{model}:generateContent`, text + inline images.
 
-On HTTP 429 from the primary model it retries once with the fallback model (Flash-Lite,
-US-22 AC19). Any other status (402 billing included) fails without a fallback.
+On HTTP 429 (quota), 500 or 503 (overloaded / unavailable) from the primary model it retries
+once with the fallback model (Flash-Lite, US-22 AC19). Any other status (402 billing and the
+other 4xx included) and connection errors fail without a fallback.
 `temperature` is deliberately not sent (Gemini 3.6+ ignores it and will reject it).
 """
 
@@ -12,13 +13,14 @@ import httpx2
 from pydantic import SecretStr
 
 from app.summarization.base import (
-    SummarizerRateLimited,
+    SummarizerError,
     SummaryRequest,
     SummaryResult,
 )
 from app.summarization.http import invalid_response, post_json
 
 MAX_OUTPUT_TOKENS = 8192
+FALLBACK_STATUSES = frozenset({429, 500, 503})  # quota, internal error, overloaded
 
 
 def build_payload(request: SummaryRequest) -> dict[str, Any]:
@@ -77,10 +79,14 @@ class GeminiSummarizer:
         payload = build_payload(request)
         try:
             return await self._generate(self._model, payload)
-        except SummarizerRateLimited:
-            if not self._fallback_model or self._fallback_model == self._model:
+        except SummarizerError as exc:
+            if not self._should_fall_back(exc):
                 raise
             return await self._generate(self._fallback_model, payload)
+
+    def _should_fall_back(self, exc: SummarizerError) -> bool:
+        has_fallback = bool(self._fallback_model) and self._fallback_model != self._model
+        return has_fallback and exc.status_code in FALLBACK_STATUSES
 
     async def _generate(self, model: str, payload: dict[str, Any]) -> SummaryResult:
         response = await post_json(

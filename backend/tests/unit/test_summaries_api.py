@@ -3,27 +3,35 @@
 import asyncio
 import base64
 import io
+import logging
 import os
 import re
+import time
 import uuid
+from contextlib import asynccontextmanager
+from datetime import timedelta
 from typing import Any
 
 import httpx2
 import pytest
 from fastapi import FastAPI
 from PIL import Image
+from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import get_settings
+from app.db.base import utcnow
 from app.db.models import Summary
+from app.services import summaries as service
 from app.summarization import (
     SummarizerError,
     SummarizerRateLimited,
     SummarizerTimeout,
     get_summarizer,
 )
+from app.summarization.gemini import GeminiSummarizer
 from app.summarization.render import TRUNCATION_NOTE
 from tests.image_utils import unzip
 from tests.summary_utils import (
@@ -141,6 +149,108 @@ async def test_partial_unique_index_rejects_a_second_active_summary(
 
     with pytest.raises(IntegrityError):
         await session.commit()
+
+
+# --- AC18: stale active jobs (orphaned by an overlapping deploy) ------------------------------
+
+
+def _stale_age() -> timedelta:
+    return service.stale_after(get_settings())
+
+
+async def _add_active(
+    session: AsyncSession, project_id: str, age: timedelta, status: str = "running"
+) -> uuid.UUID:
+    row = Summary(
+        project_id=uuid.UUID(project_id),
+        status=status,
+        provider="fake",
+        created_at=utcnow() - age,
+    )
+    session.add(row)
+    await session.commit()
+    return row.id
+
+
+async def _row(
+    session_maker: async_sessionmaker[AsyncSession], summary_id: uuid.UUID
+) -> Summary | None:
+    async with session_maker() as fresh:
+        return await fresh.get(Summary, summary_id)
+
+
+def test_stale_threshold_is_the_summary_timeout_plus_60_seconds() -> None:
+    assert _stale_age() == timedelta(seconds=get_settings().summary_timeout_seconds + 60)
+
+
+@pytest.mark.parametrize("status", ["pending", "running"])
+async def test_post_marks_a_stale_active_summary_interrupted_and_starts_a_new_job(
+    app: FastAPI,
+    client: httpx2.AsyncClient,
+    session: AsyncSession,
+    session_maker: async_sessionmaker[AsyncSession],
+    status: str,
+) -> None:
+    blocking = BlockingSummarizer()
+    use(app, blocking)
+    project_id = await project_with_transcript(client)
+    stale_id = await _add_active(session, project_id, _stale_age() + timedelta(seconds=1), status)
+
+    response = await client.post(f"/api/projects/{project_id}/summaries")
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["id"] != str(stale_id) and body["status"] == "pending"
+    stale = await _row(session_maker, stale_id)
+    assert stale is not None and stale.status == "failed"
+    assert stale.error_code == "interrupted" and stale.finished_at is not None
+    await asyncio.wait_for(blocking.started.wait(), 5)
+    assert blocking.calls == 1
+    blocking.release.set()
+    await wait_for_summary_jobs(app)
+    latest = (await client.get(f"/api/projects/{project_id}/summaries/latest")).json()
+    assert latest["id"] == body["id"] and latest["status"] == "succeeded"
+
+
+async def test_latest_reports_a_stale_active_summary_as_failed_interrupted(
+    app: FastAPI,
+    client: httpx2.AsyncClient,
+    session: AsyncSession,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    project_id = await project_with_transcript(client)
+    stale_id = await _add_active(session, project_id, _stale_age() + timedelta(seconds=1))
+
+    latest = (await client.get(f"/api/projects/{project_id}/summaries/latest")).json()
+
+    assert latest["id"] == str(stale_id)
+    assert latest["status"] == "failed" and latest["error_code"] == "interrupted"
+    assert latest["finished_at"]
+    stale = await _row(session_maker, stale_id)  # persisted: consistent with the next POST
+    assert stale is not None and stale.status == "failed" and stale.error_code == "interrupted"
+    started = (await client.post(f"/api/projects/{project_id}/summaries")).json()
+    assert started["id"] != str(stale_id) and started["status"] == "pending"
+    await wait_for_summary_jobs(app)
+
+
+async def test_an_active_summary_younger_than_the_threshold_is_still_returned_by_post(
+    app: FastAPI,
+    client: httpx2.AsyncClient,
+    session: AsyncSession,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    project_id = await project_with_transcript(client)
+    active_id = await _add_active(session, project_id, _stale_age() - timedelta(seconds=5))
+
+    response = await client.post(f"/api/projects/{project_id}/summaries")
+    latest = (await client.get(f"/api/projects/{project_id}/summaries/latest")).json()
+
+    assert response.status_code == 202
+    assert response.json()["id"] == str(active_id) and response.json()["status"] == "running"
+    assert latest["id"] == str(active_id) and latest["status"] == "running"
+    assert app.state.summary_tasks == set()  # AC4: no second job
+    row = await _row(session_maker, active_id)
+    assert row is not None and row.status == "running" and row.error_code is None
 
 
 # --- AC3: download ---------------------------------------------------------------------------
@@ -265,6 +375,35 @@ async def test_provider_failures_end_failed_with_a_safe_error_code(
     assert summary["html"] is None and summary["finished_at"]
 
 
+@pytest.mark.parametrize("status", [503, 500, 429])
+async def test_gemini_overloaded_on_both_models_ends_provider_error(
+    app: FastAPI, client: httpx2.AsyncClient, status: int
+) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request.url.path.rsplit("/", 1)[-1])
+        return httpx2.Response(status, json={"error": {"status": "UNAVAILABLE"}})
+
+    use(
+        app,
+        GeminiSummarizer(
+            api_key=SecretStr("test-key"),
+            base_url="https://gemini.invalid/v1beta",
+            model="flash",
+            fallback_model="flash-lite",
+            timeout_seconds=5,
+            transport=httpx2.MockTransport(handler),
+        ),
+    )
+    project_id = await project_with_transcript(client)
+
+    summary = await generate(app, client, project_id)
+
+    assert seen == ["flash:generateContent", "flash-lite:generateContent"]
+    assert summary["status"] == "failed" and summary["error_code"] == "provider_error"
+
+
 async def test_a_provider_slower_than_the_timeout_ends_provider_timeout(
     app: FastAPI, client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -349,6 +488,47 @@ async def test_over_the_caps_the_summary_is_marked_truncated(
     assert summary["truncated"] is True and summary["image_count"] == 1
     assert TRUNCATION_NOTE in summary["html"]
     assert "truncated content" in stub.requests[0].system_instruction
+
+
+async def test_the_image_count_cap_alone_marks_the_summary_truncated(
+    app: FastAPI, client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SUMMARY_MAX_IMAGES", "1")
+    get_settings.cache_clear()
+    stub = StubSummarizer()
+    use(app, stub)
+    project_id = await project_with_transcript(client, text="short")  # far under the char cap
+    for _ in range(2):
+        await add_screenshot(client, project_id, real_png())
+
+    summary = await generate(app, client, project_id)
+
+    assert "short" in stub.requests[0].user_text  # the text was sent whole
+    assert summary["truncated"] is True and summary["image_count"] == 1
+    assert len(stub.requests[0].images) == 1 and TRUNCATION_NOTE in summary["html"]
+
+
+async def test_a_smaller_later_image_is_included_after_one_exceeds_the_byte_budget(
+    app: FastAPI, client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    budget = 20_000
+    monkeypatch.setenv("SUMMARY_MAX_IMAGE_BYTES", str(budget))
+    get_settings.cache_clear()
+    stub = StubSummarizer()
+    use(app, stub)
+    project = await create_project(client)
+    transcript = await add_transcript(client, project["id"])
+    # Linked screenshots are tried oldest first: the big one first, then the small one.
+    big = _noise_png(400, 300)  # tens of KB as JPEG: over the budget on its own
+    await add_screenshot(client, project["id"], big, transcript_id=transcript["id"])
+    small = real_png(64, 48)  # a few hundred bytes
+    await add_screenshot(client, project["id"], small, transcript_id=transcript["id"])
+
+    summary = await generate(app, client, project["id"])
+
+    sent = stub.requests[0].images
+    assert len(sent) == 1 and len(sent[0].data) < 1_000 and sent[0].mime_type == "image/png"
+    assert summary["image_count"] == 1 and summary["truncated"] is True
 
 
 async def test_undecodable_screenshots_are_skipped(
@@ -466,17 +646,65 @@ async def test_startup_marks_pending_and_running_summaries_interrupted(
     assert latest["finished_at"]
 
 
-async def test_shutdown_cancels_running_jobs(app: FastAPI, client: httpx2.AsyncClient) -> None:
+async def test_shutdown_cancels_running_jobs_and_marks_them_interrupted(
+    app: FastAPI, client: httpx2.AsyncClient, session_maker: async_sessionmaker[AsyncSession]
+) -> None:
     blocking = BlockingSummarizer()
     use(app, blocking)
     project_id = await project_with_transcript(client)
 
     async with app.router.lifespan_context(app):
-        await client.post(f"/api/projects/{project_id}/summaries")
+        started = (await client.post(f"/api/projects/{project_id}/summaries")).json()
         await asyncio.wait_for(blocking.started.wait(), 5)
         assert len(app.state.summary_tasks) == 1
 
     assert app.state.summary_tasks == set()
+    row = await _row(session_maker, uuid.UUID(started["id"]))
+    assert row is not None and row.status == "failed" and row.error_code == "interrupted"
+    assert row.finished_at is not None
+
+
+async def test_shutdown_swallows_a_failing_interrupted_write(
+    app: FastAPI,
+    client: httpx2.AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    blocking = BlockingSummarizer()
+    use(app, blocking)
+    project_id = await project_with_transcript(client)
+
+    def broken(*_criteria: Any) -> Any:
+        raise RuntimeError("database is gone")
+
+    with caplog.at_level(logging.WARNING, logger="app.services.summaries"):
+        async with app.router.lifespan_context(app):
+            started = (await client.post(f"/api/projects/{project_id}/summaries")).json()
+            await asyncio.wait_for(blocking.started.wait(), 5)
+            monkeypatch.setattr(service, "_interrupt", broken)
+
+    assert app.state.summary_tasks == set()  # shutdown completed without raising
+    row = await _row(session_maker, uuid.UUID(started["id"]))
+    assert row is not None and row.status == "running"  # startup recovery fixes it later
+    warnings = [r for r in caplog.records if r.getMessage() == "summary interruption not stored"]
+    assert len(warnings) == 1 and getattr(warnings[0], "error_type", None) == "RuntimeError"
+
+
+async def test_the_shutdown_interrupted_write_gives_up_after_a_short_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(service, "SHUTDOWN_WRITE_TIMEOUT_SECONDS", 0.05)
+
+    @asynccontextmanager
+    async def hanging_factory() -> Any:
+        await asyncio.Event().wait()  # the database never answers
+        yield None
+
+    began = time.monotonic()
+    await service._store_interrupted_on_cancel(hanging_factory, uuid.uuid4(), {})  # type: ignore[arg-type]
+
+    assert time.monotonic() - began < 2
 
 
 async def test_deleting_the_project_deletes_its_summaries(

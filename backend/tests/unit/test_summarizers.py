@@ -198,15 +198,48 @@ async def test_gemini_without_a_fallback_model_does_not_retry() -> None:
     assert len(seen) == 1
 
 
+def _models(seen: list[httpx2.Request]) -> list[str]:
+    return [r.url.path.rsplit("/", 1)[-1].removesuffix(":generateContent") for r in seen]
+
+
 @pytest.mark.anyio
-@pytest.mark.parametrize("status", [402, 500, 400])
-async def test_gemini_other_errors_fail_without_fallback(status: int) -> None:
+@pytest.mark.parametrize("status", [429, 500, 503])
+async def test_gemini_429_500_503_fall_back_once_to_the_fallback_model(status: int) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if "/models/flash:" in str(request.url):
+            return httpx2.Response(status, json={"error": {"status": "UNAVAILABLE"}})
+        return gemini_ok("<p>from lite</p>")
+
+    summarizer, seen = gemini(handler)
+
+    result = await summarizer.summarize(REQUEST)
+
+    assert _models(seen) == ["flash", "flash-lite"]
+    assert result.model == "flash-lite" and result.fragment == "<p>from lite</p>"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status", [429, 500, 503])
+async def test_gemini_failure_on_both_models_is_a_provider_error_after_one_fallback(
+    status: int,
+) -> None:
+    summarizer, seen = gemini(lambda _r: httpx2.Response(status, text="SECRET-BODY"))
+
+    with pytest.raises(SummarizerError) as info:
+        await summarizer.summarize(REQUEST)
+    assert _models(seen) == ["flash", "flash-lite"]
+    assert info.value.status_code == status and "SECRET-BODY" not in str(info.value)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status", [402, 400, 401, 403, 404])
+async def test_gemini_402_and_other_4xx_fail_without_fallback(status: int) -> None:
     summarizer, seen = gemini(lambda _r: httpx2.Response(status, text="SECRET-BODY"))
 
     with pytest.raises(SummarizerError) as info:
         await summarizer.summarize(REQUEST)
     assert not isinstance(info.value, SummarizerRateLimited)
-    assert info.value.status_code == status and len(seen) == 1
+    assert info.value.status_code == status and _models(seen) == ["flash"]
     assert "SECRET-BODY" not in str(info.value)
 
 

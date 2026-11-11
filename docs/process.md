@@ -6,7 +6,7 @@ How work moves from an idea to `main`. The roles are described in [agent-team.md
 
 - The tracker is public: <https://github.com/mrfmanuel/EchoNotes/issues>. The board is the **EchoNotes** GitHub Project.
 - No code without an issue. If you find work while implementing, open a new issue instead of widening the PR.
-- Milestones: `M1 Foundation`, `M2 App`, `M3 Deploy & CI/CD`, `M4 Observability & On-call`.
+- Milestones: `M1 Foundation`, `M2 App`, `M3 Deploy & CI/CD`, `M4 Observability & On-call`, `M5 AI Summary` (bonus).
 
 ### Labels
 

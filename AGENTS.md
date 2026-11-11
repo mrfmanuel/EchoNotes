@@ -18,7 +18,9 @@ Instructions for every AI coding agent (and human) working in this repo. Keep th
 | Test pyramid and commands | [docs/testing.md](docs/testing.md) |
 | Environments (Render + Neon), secrets, setup | [docs/deployment.md](docs/deployment.md) |
 | Dev → prod promotion, approval gate, rollback | [docs/release-process.md](docs/release-process.md) |
-| Telemetry, alerts, on-call (planned P4) and privacy rules | [docs/observability.md](docs/observability.md) |
+| Telemetry (OpenTelemetry → Grafana LGTM), dashboard, alert, privacy rules | [docs/observability.md](docs/observability.md) · runbook [docs/runbooks/transcription-failures.md](docs/runbooks/transcription-failures.md) |
+| On-call responder agent: loop, capability table, autonomy policy, escalation | [docs/on-call.md](docs/on-call.md) · [incident-response/](incident-response/) |
+| Incident INC-001 end to end + responder security review | [docs/operations-and-security-report.md](docs/operations-and-security-report.md) |
 | How AI was used to build this | [docs/ai-usage-report.md](docs/ai-usage-report.md) |
 
 Subagent definitions are in [`.claude/agents/`](.claude/agents/).
@@ -27,7 +29,7 @@ Subagent definitions are in [`.claude/agents/`](.claude/agents/).
 
 - **Backend:** Python 3.12, FastAPI, SQLAlchemy 2 + Alembic (from M2), Postgres; managed with **uv**; tested with pytest; linted and formatted with ruff
 - **Frontend:** React 19 + TypeScript (strict) + Vite; tested with Vitest + Testing Library (jsdom); linted with oxlint
-- **Infra:** Docker / docker compose (M2), GitHub Actions CI, Render dev + prod (M3), OpenTelemetry (M4)
+- **Infra:** Docker / docker compose, GitHub Actions CI/CD, Render dev + prod with Neon Postgres, OpenTelemetry → Grafana LGTM, on-call responder (headless Claude Code)
 
 ## Repo layout
 
@@ -64,6 +66,11 @@ make test                       # unit + integration (throwaway Postgres) + fron
 # deploy (GitHub Actions; see docs/release-process.md)
 gh workflow run deploy-prod.yml # promote dev's commit to prod (needs approval)
 gh workflow run rollback.yml -f environment=prod -f ref=<sha>
+
+# observability and on-call (local)
+make obs-up                     # app + Grafana LGTM -> http://localhost:3000 (admin/admin)
+make incident                   # live on-call demo (chaos bug -> alert -> agent -> PR -> recovery)
+make test-responder             # responder tests with a stub agent
 ```
 
 ## Coding conventions
@@ -92,5 +99,7 @@ Every acceptance criterion has evidence. Tests are written with the code and pas
 - **Never persist raw audio.** Process it in memory or a temp file and discard it in `finally`.
 - Validate uploads by size and content type (images by magic bytes).
 - Tests and CI never call the real Groq API. Use `TRANSCRIBER_PROVIDER=fake`. (The post-deploy smoke test against dev/prod uses the deployed service's own Groq provider with a 1 s silent clip; CI never holds the Groq key.)
+- Telemetry follows the same rules as logs: IDs, sizes, durations, status, provider only (privacy tests enforce it).
+- The on-call agent never gets production credentials; its autonomy policy is enforced in `incident-response/responder.py`, not in the prompt. Never merge a chaos branch.
 - Never print deploy hooks, database URLs or `.env*` values. Deploy hooks are GitHub secrets.
 - Don't run destructive git commands (`push --force` to `main`, history rewrites) without explicit human approval.

@@ -160,4 +160,89 @@ How AI tools were used to build EchoNotes, what the agents did, and what a human
 - Open the live demo in a browser: check the footer shows `v0.1.0 · ebdef98 · prod`, and record a short clip with the microphone over HTTPS.
 - Optionally try a Render dashboard rollback once to see it.
 
-## P4 — Observability and on-call *(planned)*
+## P4 — Observability and on-call (2026-11-11)
+
+- **Prompt:** [`prompts/P4-observability-oncall.md`](../prompts/P4-observability-oncall.md)
+- **Summary:** milestone M4. It covers OpenTelemetry on the key journey, a local Grafana LGTM stack with a dashboard and a user-impact alert, and an alert-driven on-call responder that runs **headless Claude Code** under a policy enforced in code. The loop was demonstrated end to end, for real. Then came the final rubric audit, the docs, the release `v1.0.0` and the prod deploy.
+
+### How the session was orchestrated
+- **One binding brief before any code.** The tech lead wrote a P4 brief that every engineer received. It fixed the ownership of files per PR, the metric names *as seen in Prometheus*, span and attribute names, env vars, ports, datasource UIDs, the alert expression, the evidence API, the chaos-branch rule and the machine rules. Three `devops-sre` agents could then build in parallel in isolated worktrees: instrumentation (#29), stack + alert (#30/#31) and responder (#32).
+- **Contract verified early, then broadcast.** The #29 engineer verified the metric and Loki label names against a real `grafana/otel-lgtm`. The tech lead forwarded them to the other two builds, including an alert edge case they found: with zero failures the numerator is empty, so the expression needs `or vector(0)`. The other PRs never had to be reworked for naming.
+- **Live proof by the tech lead.** After merging, the tech lead ran `make incident` for real (twice, see below), captured the Grafana screenshots while the alert was firing, closed the responder's PR with a written reason and committed the incident folders.
+
+### What each agent did
+
+| Agent | Work |
+|---|---|
+| `product-manager` | Rewrote the ACs of #29–#33 to match the P4 design. Added US-18–US-21 and NFR-Observability to the spec. Ran the independent final rubric audit |
+| `devops-sre` (×4 runs) | PR #51 (OpenTelemetry, redacting span processor, privacy tests), PR #53 (LGTM compose profile, provisioning, dashboard, alert, runbook), PR #52 (responder, evidence, policy, chaos patch, one-command demo, 80 tests), PR #55 (CLI schema fix after the first live run) |
+| `qa-engineer` (×7 runs + final audit) | #51 APPROVED; #52 CHANGES REQUESTED → re-check → re-check 2 APPROVED; #53 CHANGES REQUESTED → APPROVED; #55 APPROVED (with a real `claude` call); independent final rubric audit |
+| headless Claude Code (`claude -p`, opus) | **The on-call agent itself**, started by the alert: found the root cause from the evidence and wrote the fix + regression test in INC-20261111-052713 (16 turns, USD 0.47) |
+
+### Pull requests and issues
+
+| PR | Issues | Content |
+|---|---|---|
+| [#51](https://github.com/mrfmanuel/EchoNotes/pull/51) | #29 | Traces, metrics, logs with `trace_id`, optional OTLP export, privacy tests |
+| [#53](https://github.com/mrfmanuel/EchoNotes/pull/53) | #30 #31 | `make obs-up`, Grafana LGTM, dashboard `echonotes-journey`, failure-ratio alert, webhook, runbook |
+| [#52](https://github.com/mrfmanuel/EchoNotes/pull/52) | #32 | On-call responder, autonomy policy in code, `make incident` |
+| [#55](https://github.com/mrfmanuel/EchoNotes/pull/55) | #32 | CLI-compatible `--json-schema` (found by the first live run) |
+| [#56](https://github.com/mrfmanuel/EchoNotes/pull/56) | — | **Opened by the on-call agent**; closed without merging (the bug only existed on the chaos branch) |
+| docs commits | #32 #33 | Incident evidence + screenshots, operations report, README review guide, rubric table, AGENTS.md |
+| — | #54 | Availability alert, labelled `future` |
+
+### Problems found by QA and by the process
+- **QA found real security holes in the responder (#52).** QA reviewed the responder as an attack surface, not just as code:
+  - **Git hooks:** code the agent writes runs under pytest. It could plant git hooks that commit a denied file or run with push credentials.
+  - **Deleted tests:** the agent could delete a test that its fix breaks, and "tests pass" would still hold.
+  - **Global git config:** a later re-check found that agent code could edit the operator's global git config (`pushInsteadOf`) and redirect the approved push.
+
+  All were fixed with regression tests: hooks and config pinned, the commit built with `commit-tree` and compared with the evaluated diff, the push URL verified, `no_tests_removed`, secret scan, symlink and path checks, checks run in a clean checkout.
+- **QA caught a fake recovery (#53).** The runbook's rebuild command turned telemetry off. The alert then went NoData → OK and looked "recovered". The fix added `make obs-rebuild-app`, and verification now requires `target_info` for the fixed commit.
+- **Provider failures log at WARN**, so the first "error logs" panel was empty during a Groq outage. The panel and the evidence query now include WARN.
+- **The first live run escalated (INC-20261111-051629).** The Claude Code CLI rejected the 2020-12 `$schema` in `--json-schema`. The policy did exactly its job: no answer meant escalation, and nothing was committed or pushed. The fix went through a normal PR (#55) with QA and a real call.
+- **A merge closed #32 too early.** GitHub closed it from the PR description's `Closes #32`, so the tech lead reopened it until the demo evidence existed.
+- **The usage limit stopped three agents and a QA run at once.** All four were resumed from their saved state.
+
+### Tech-lead verification (live)
+- **INC-20261111-052713 (`resolved_verified`):**
+  - The alert fired at a 40 % failure ratio.
+  - The evidence had 50 log lines with the stack trace, 3 traces and metrics.
+  - Claude Code (opus) found `transcriptions.py:93` dividing by a 0.0 s duration. It fixed the guard and added a test that fails before the fix.
+  - The policy approved and the responder opened PR #56. The app was rebuilt, then verified: 0/20 failures, the fixed SHA in telemetry, smoke passed, alert back to Normal.
+  - **3 min 39 s from alert to verified recovery.** Full reconstruction: [operations-and-security-report.md](operations-and-security-report.md).
+- **`make test`:** 713 tests pass (456 unit + 38 integration + 136 frontend + 83 responder). CI is green on `main`.
+
+### What a human must still verify
+- Look at Grafana yourself: `make obs-up`, then <http://localhost:3000>.
+- Optionally rerun `make incident`. It costs a few tens of cents of model usage and needs `gh` and `claude` logged in.
+- Approve the final prod deploy in GitHub's `production` environment.
+
+## Retrospective (P0–P4)
+
+**What worked**
+- **Issue-first, with an independent QA agent.** Every PR had a QA report. QA requested changes on 6 PRs (#38, #50, #52 twice, #53, plus the security follow-up) and each time found something real: missing error states, a commit hidden by compose, a git-hook bypass, a fake recovery. A separate verifier with a fresh context and a skeptical brief was the most valuable role on the team.
+- **Binding briefs plus file ownership** let 3 engineers work in parallel without stepping on each other. The handful of merge conflicts were trivial.
+- **Verifying against the real thing:**
+  - real Postgres in the tests;
+  - real `grafana/otel-lgtm` for metric names;
+  - a real Render deploy with `ref=<sha>` and health-commit polling;
+  - real `claude` calls to validate CLI flags;
+  - a real end-to-end incident.
+
+  Each of these caught something a mock would not have.
+- **The policy-in-code design paid off on the very first live run.** When the agent produced nothing, the system escalated instead of guessing.
+
+**What the agents got wrong**
+- They assumed things about tools that were never checked: `--json-schema` accepting draft 2020-12, uv's build cache shipping stale code, compose overriding a baked env var, the Windows Proactor loop with psycopg. The fix each time was a real run, not more reasoning.
+- They shared a machine carelessly early on (P2):
+  - one smoke run tore down another agent's stack;
+  - one agent killed a process by port and stopped Docker Desktop.
+
+  From then on, private ports and project names per agent were part of every brief.
+- They over-claimed in commit messages twice. One commit message described a change that hadn't applied, and a PR description went stale after a fix. QA flagged both.
+
+**What humans verified or decided**
+- The human set up the external accounts (Neon, Render, Groq, deploy hooks) and approved every production deploy in GitHub's `production` environment.
+- The human was asked to check the app in a real browser (microphone, Ctrl+V, phone, dark mode) and to record Spanish/Portuguese audio on prod. These are the parts automated tests cannot prove.
+- The human wrote and adjusted the prompts in [`prompts/`](../prompts/). The tech-lead session chose the trade-offs, for example: smoke on deployed envs uses the real provider, chaos PRs target a throwaway base branch, PR #56 closed without merging.

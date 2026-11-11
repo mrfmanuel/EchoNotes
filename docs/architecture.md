@@ -1,6 +1,6 @@
 # Architecture
 
-> Status: implemented in M2 (P2). Deployment (Render) is planned for M3 and OpenTelemetry for M4.
+> Status: implemented (v1.0.0). App in M2, deployment on Render + Neon in M3 ([deployment.md](deployment.md)), OpenTelemetry and the on-call responder in M4 ([observability.md](observability.md), [on-call.md](on-call.md)).
 
 ## Overview
 

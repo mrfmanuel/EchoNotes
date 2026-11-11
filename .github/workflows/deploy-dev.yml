@@ -16,6 +16,11 @@ on:
         description: "Commit SHA on main to deploy (short or full). Empty = current main HEAD."
         required: false
         default: ""
+      smoke_summary:
+        description: "Also smoke the AI summary (turn off to redeploy a commit from before #62)."
+        type: boolean
+        required: false
+        default: true
 
 run-name: >-
   Deploy dev ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha
@@ -76,4 +81,12 @@ jobs:
           DEV_URL: ${{ vars.DEV_URL }}
           SHA: ${{ steps.target.outputs.sha }}
           DEPLOY_SUMMARY_TITLE: Deploy dev
+          # Dev only (#60): also smoke the AI summary with dev's real Gemini (one tiny call per
+          # deploy). A provider_error/provider_timeout (free-tier quota) is a warning, not a
+          # failed deploy; HTTP errors, stuck jobs and bad HTML still fail. Prod does not set it.
+          # Always on for CI-triggered runs; a manual run can turn it off (input smoke_summary).
+          SMOKE_SUMMARY: ${{ (github.event_name != 'workflow_dispatch' || inputs.smoke_summary) && '1' || '0' }}
+          SMOKE_SUMMARY_ALLOW_PROVIDER_ERROR: "1"
+          # Dev has GEMINI_API_KEY: a summary from `fake` means the key is missing on Render.
+          SMOKE_SUMMARY_EXPECT_PROVIDER: gemini
         run: scripts/deploy.sh dev "$DEV_URL" "$SHA"

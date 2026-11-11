@@ -12,7 +12,9 @@ Counts as of #47. `pytest --collect-only -q` and `npx vitest run` print the curr
 | Backend integration | 38 | `pytest -m integration`, real Postgres 16, Alembic migrations, `httpx2.ASGITransport` | Migrations (empty DB → head, downgrade/upgrade round trip, models == migrations), cascades and `SET NULL` on Postgres, every API flow with persistence (bytea, `timestamptz`, unique slugs), export ZIP tree, **full flow** and **privacy** test | every PR (`backend` job with a `postgres:16` service), `make test` |
 | Frontend component | 136 | Vitest + Testing Library + jsdom, mocked API client | Pages and components: projects, upload/record, transcript editor (copy, download, unsaved changes), screenshots (picker, Ctrl+V paste, link, gallery), export, API client errors, build-info footer | every PR (`frontend` job), `make test`, `make test-unit` |
 | On-call responder | 83 | `pytest` (stdlib + PyYAML/jsonschema via `uv run`), a **stub agent** instead of `claude`, throwaway git repos | Webhook dedupe and malformed input, evidence collection and scrubbing, response schema, every autonomy-policy check (paths, lines, removed tests, secrets, symlinks, reproduction, hooks/config tampering, commit = evaluated diff), the full pipeline with publish/deploy stubs, CLI-compatible schema (#32) | every PR (`incident-response` job), `make test`, `make test-unit`, `make test-responder` |
-| End-to-end smoke | 1 script (8 steps) | `scripts/smoke.sh` (bash + curl + Python 3) against a running stack | Key journey: health → SPA → create project → upload audio → transcript → screenshot → export ZIP → delete | every PR (CI `docker` job, compose stack); after every deploy (M3) |
+| End-to-end smoke | 1 script (8 steps, +1 optional) | `scripts/smoke.sh` (bash + curl + Python 3) against a running stack | Key journey: health → SPA → create project → upload audio → transcript → screenshot → [AI summary, `SMOKE_SUMMARY=1`] → export ZIP → delete | every PR (CI `docker` job, compose stack); after every deploy (M3); the summary step after dev deploys only |
+
+The AI project summary (US-22, M5) adds tests in every backend layer: unit tests for the prompt builder (character cap, truncation note, image selection and downscaling), the sanitizer with a malicious transcript, the provider factory's auto rule, Gemini/Groq error mapping with a mocked HTTP layer (429 fallback, 402, 500, timeout), the summary endpoints and contract, and summary telemetry privacy; Postgres integration tests for the full flow with `summary.html` in the ZIP, the single active job per project and restart recovery; frontend tests for every `SummaryPanel` state; and the optional smoke step. None of them calls a real LLM (`fake` provider or mocked HTTP).
 
 ### Backend suites in detail
 
@@ -73,6 +75,7 @@ make smoke SMOKE_URL=https://<dev-or-prod-url> # post-deploy check (M3)
   4. `POST /api/projects/{id}/transcriptions` with the WAV → 201 (prints provider and duration only).
   5. `GET /api/transcriptions/{id}` → 200; `text` must be non-empty (prints its length only).
   6. `POST /api/projects/{id}/screenshots` with the PNG and `transcript_id` → 201, linked.
+  - *Optional, `SMOKE_SUMMARY=1` (US-22, #60):* `POST /api/projects/{id}/summaries` → 202; poll `GET …/summaries/latest` every 3 s (up to `SMOKE_SUMMARY_TIMEOUT`) until `succeeded` or `failed`; a succeeded `html` must start with `<!doctype html` and contain no `<script`; `GET …/summaries/{summaryId}/download` → 200 `text/html`, attachment `summary.html`; the ZIP in step 7 must then also contain `<slug>/summary.html`. Prints status, provider, model, `error_code` and sizes only. A `failed` job always fails the run, except `provider_error`/`provider_timeout` with `SMOKE_SUMMARY_ALLOW_PROVIDER_ERROR=1` (a warning). Verified locally against a compose stack of PR #62 with the `fake` summarizer.
   7. `GET /api/projects/{id}/export` → 200 `application/zip`; Python `zipfile.testzip()` passes and the tree has `<slug>/README.md`, `<slug>/transcripts/*.md`, `<slug>/transcripts/*.txt` and `<slug>/screenshots/01-*.png`.
   8. `DELETE /api/projects/{id}` → 204. If an earlier step fails (or the run is interrupted), the `EXIT` trap still deletes the project, so dev/prod stay clean. `SMOKE_KEEP=1` is the only way to skip the cleanup. Verified for #47 by forcing a failure at step 4 (provider `groq` pointed at an unreachable `GROQ_BASE_URL` → 502): the trap printed `cleanup: deleted project <id> (HTTP 204)` and `GET /api/projects` listed no `smoke-test-*` project.
 - **Privacy:** prints only status codes, IDs, sizes, counts and timings, never response bodies, transcript text or secrets (`user:pass@` in the URL is masked).
@@ -85,6 +88,10 @@ make smoke SMOKE_URL=https://<dev-or-prod-url> # post-deploy check (M3)
 | `SMOKE_SKIP_SPA` | unset | `1` skips the SPA checks (API-only server, e.g. `uvicorn` without `STATIC_DIR`) |
 | `SMOKE_KEEP` | unset | `1` keeps the smoke project for debugging (no delete) |
 | `SMOKE_EXPECT_COMMIT` | unset | Full SHA; the health step fails unless `/api/health` reports exactly this `commit` |
+| `SMOKE_SUMMARY` | unset | `1` runs the optional AI summary step (set by `deploy-dev.yml` only; CI and prod leave it off) |
+| `SMOKE_SUMMARY_TIMEOUT` | `120` | Seconds to wait for the summary job to reach `succeeded`/`failed` |
+| `SMOKE_SUMMARY_EXPECT_PROVIDER` | unset | Fail unless the summary's `provider` is exactly this value (deploy-dev sets `gemini`, so a missing key that falls back to `fake` fails) |
+| `SMOKE_SUMMARY_ALLOW_PROVIDER_ERROR` | unset | `1` turns a job `failed` with `provider_error`/`provider_timeout` (e.g. free-tier quota) into a warning; other failures still fail |
 
 ## Deploy script tests (`scripts/deploy.sh`, #25 #26 #27)
 

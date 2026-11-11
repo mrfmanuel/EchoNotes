@@ -23,6 +23,9 @@ BACKEND_KEYS = {
     "STATIC_DIR",
     "RENDER_GIT_COMMIT",
     "GIT_SHA",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_SERVICE_NAME",
+    "OTEL_METRIC_EXPORT_INTERVAL",
 }
 # Documented in .env.example as comments, not values (#47): RENDER_GIT_COMMIT is set by Render,
 # and a `GIT_SHA=` line copied into .env (compose env_file) would blank the image's baked GIT_SHA.

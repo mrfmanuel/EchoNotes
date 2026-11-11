@@ -18,6 +18,7 @@ from app.db.session import get_session
 from app.services import transcriptions as service
 from app.services.transcript_format import RenderableTranscript, render_markdown, render_text
 from app.services.uploads import MIB, read_capped, require_non_empty, resolve_audio_type
+from app.telemetry import TranscriptionCreateRoute, annotate_transcription
 from app.transcription import Transcriber, get_transcriber
 
 router = APIRouter(prefix="/api", tags=["transcriptions"])
@@ -49,13 +50,6 @@ CREATE_RESPONSES: dict[int | str, dict[str, object]] = {
 }
 
 
-@router.post(
-    "/projects/{projectId}/transcriptions",
-    operation_id="createTranscription",
-    status_code=status.HTTP_201_CREATED,
-    response_model=schemas.Transcript,
-    responses=CREATE_RESPONSES,
-)
 async def create_transcription(
     project_id: ProjectIdPath,
     session: SessionDep,
@@ -66,10 +60,13 @@ async def create_transcription(
 ) -> schemas.Transcript:
     audio: bytes | None = None
     upload: service.AudioUpload | None = None
+    hint = None if language == "auto" else language
+    annotate_transcription(provider=transcriber.name, project_id=project_id, language=language)
     try:
         await service.ensure_project_exists(session, project_id)
         audio_type = resolve_audio_type(file.filename, file.content_type)
         audio = require_non_empty(await read_capped(file, get_settings().max_audio_mb * MIB))
+        annotate_transcription(size_bytes=len(audio))
         upload = service.AudioUpload(
             audio=audio,
             filename=audio_type.filename,
@@ -82,14 +79,29 @@ async def create_transcription(
             project_id,
             upload,
             title=service.resolve_title(title, file.filename),
-            language=None if language == "auto" else language,
+            language=hint,
         )
+        annotate_transcription(transcript_id=transcript.id)
         return schemas.Transcript.model_validate(transcript)
     finally:
         # Drop every reference to the raw audio and release the spooled upload (US-05 AC6).
         audio = None
         upload = None
         await file.close()
+
+
+# Registered with its own route class: the whole create flow (request validation included) is
+# one `transcription.create` span and one `echonotes.transcriptions` count (#29).
+router.add_api_route(
+    "/projects/{projectId}/transcriptions",
+    create_transcription,
+    methods=["POST"],
+    operation_id="createTranscription",
+    status_code=status.HTTP_201_CREATED,
+    response_model=schemas.Transcript,
+    responses=CREATE_RESPONSES,
+    route_class_override=TranscriptionCreateRoute,
+)
 
 
 @router.get(

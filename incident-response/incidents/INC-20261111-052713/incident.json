@@ -1,0 +1,17 @@
+{
+  "incident_id": "INC-20261111-052713",
+  "dedupe_key": "echonotes-transcription-failure-ratio:dcedafa3246b9baf",
+  "status": "resolved_verified",
+  "opened_at": "2026-11-11T05:29:15.180732+00:00",
+  "branch": "oncall/INC-20261111-052713",
+  "deployed_commit": "c65a32694456a16381b5af69e7aeba029a6bfa9c",
+  "candidate_commit": "0e67e00332012ce5ae617dda159a8cce5c83c391",
+  "commit_subject": "fix(transcriptions): INC-20261111-052713: about 40% of transcriptions failed (INC-20261111-052713)",
+  "fix_commit": "0e67e00332012ce5ae617dda159a8cce5c83c391",
+  "pushed": true,
+  "pr_url": "https://github.com/mrfmanuel/EchoNotes/pull/56",
+  "pr_base": "chaos/INC-20261111-052713",
+  "deployed_fix": "0e67e00332012ce5ae617dda159a8cce5c83c391",
+  "recovered": true,
+  "finished_at": "2026-11-11T05:32:54.154977+00:00"
+}

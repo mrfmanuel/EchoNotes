@@ -1,0 +1,10 @@
+{
+  "incident_id": "INC-20261111-051629",
+  "dedupe_key": "echonotes-transcription-failure-ratio:dcedafa3246b9baf",
+  "status": "escalated",
+  "opened_at": "2026-11-11T05:18:55.130845+00:00",
+  "branch": "oncall/INC-20261111-051629",
+  "deployed_commit": "66ceb74f40fec7b66b70b8522ae46bedea0f3e91",
+  "escalation_reason": "policy checks failed",
+  "finished_at": "2026-11-11T05:19:20.341592+00:00"
+}

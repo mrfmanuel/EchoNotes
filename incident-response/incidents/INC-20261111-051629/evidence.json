@@ -1,0 +1,1002 @@
+{
+  "incident_id": "INC-20261111-051629",
+  "collected_at": "2026-11-11T05:19:14.140773+00:00",
+  "window_minutes": 15,
+  "alert": {
+    "status": "firing",
+    "alertname": "EchoNotes transcription failure ratio high",
+    "severity": "page",
+    "journey": "transcription",
+    "starts_at": "2026-11-11T05:18:50Z",
+    "summary": "38.78% of transcriptions failed in the last 2 minutes (threshold 20 %, at least 5 requests).",
+    "runbook_url": "https://github.com/mrfmanuel/EchoNotes/blob/main/docs/runbooks/transcription-failures.md",
+    "values": {
+      "A": 0.3878338711489292,
+      "B": 0.3878338711489292,
+      "C": 1
+    }
+  },
+  "deployment": {
+    "http_status": 200,
+    "status": "ok",
+    "version": "0.1.0",
+    "database": "ok",
+    "commit": "66ceb74f40fec7b66b70b8522ae46bedea0f3e91",
+    "environment": "local"
+  },
+  "metrics": {
+    "failure_ratio_2m": {
+      "query": "(sum(increase(echonotes_transcriptions_total{status=~\"provider_error|timeout|server_error\"}[2m])) or vector(0)) / sum(increase(echonotes_transcriptions_total[2m]))",
+      "series": [
+        {
+          "labels": {},
+          "value": 0.3894403443530037
+        }
+      ]
+    },
+    "transcriptions_by_status_5m": {
+      "query": "sum by (provider, status) (increase(echonotes_transcriptions_total[5m]))",
+      "series": [
+        {
+          "labels": {
+            "provider": "fake",
+            "status": "success"
+          },
+          "value": 110.61957640264785
+        },
+        {
+          "labels": {
+            "provider": "fake",
+            "status": "server_error"
+          },
+          "value": 70.50033691040677
+        }
+      ]
+    },
+    "transcription_p95_seconds_5m": {
+      "query": "histogram_quantile(0.95, sum by (le) (rate(echonotes_transcription_duration_seconds_bucket[5m])))",
+      "series": [
+        {
+          "labels": {},
+          "value": 0.046395843529805476
+        }
+      ]
+    },
+    "exports_by_status_5m": {
+      "query": "sum by (status) (increase(echonotes_exports_total[5m]))",
+      "series": [
+        {
+          "labels": {
+            "status": "success"
+          },
+          "value": 17.836560459301484
+        }
+      ]
+    },
+    "deployed_revision": {
+      "query": "max by (vcs_ref_head_revision, service_version) (target_info{service_name=\"echonotes-api\"})",
+      "series": [
+        {
+          "labels": {
+            "service_version": "0.1.0",
+            "vcs_ref_head_revision": "66ceb74f40fec7b66b70b8522ae46bedea0f3e91"
+          },
+          "value": 1.0
+        }
+      ]
+    }
+  },
+  "logs": {
+    "source": "loki",
+    "query": "{service_name=\"echonotes-api\"} | severity_text=~\"WARN|ERROR|FATAL\"",
+    "lines": [
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "b23d1337-8bdc-4928-a5a7-0f60efa14ffb",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "b9311dcccdff5dc0",
+        "stack_trace": "  File \"/app/.venv/lib/python3.12/site-packages/app/middleware.py\", line 62, in __call__\n    await self.app(scope, receive, send_with_request_id)\n  File \"/app/.venv/lib/python3.12/site-packages/starlette/middleware/exceptions.py\", line 63, in __call__\n    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)\n  File \"/app/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py\", line 53, in wrapped_app\n    raise exc\n  File \"/app/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py\", line 42, in wrapped_app\n    await app(scope, receive, sender)\n  File \"/app/.venv/lib/python3.12/site-packages/fastapi/middleware/asyncexitstack.py\", line 18, in __call__\n    await self.app(scope, receive, send)\n  File \"/app/.venv/lib/python3.12/site-packages/starlette/routing.py\", line 683, in __call__\n    await self.middleware_stack(scope, receive, send)\n  File \"/app/.venv/lib/python3.12/site-packages/fastapi/routing.py\", line 2811, in app\n    await route.handle(scope, receive, send)\n  File \"/app/.venv/lib/python3.12/site-packages/fastapi/routing.py\", line 1839, in handle\n    await self.original_router.handle(scope, receive, send)\n  File \"/app/.venv/lib/python3.12/site-packages/fastapi/routing.py\", line 2894, in handle\n    await included_router._handle_selected(scope, receive, send)\n  File \"/app/.venv/lib/python3.12/site-packages/fastapi/routing.py\", line 1865, in _handle_selected\n    await original_route.handle(scope, receive, send)\n  File \"/app/.venv/lib/python3.12/site-packages/fastapi/routing.py\", line 1328, in handle\n    await effective_context.app(scope, receive, send)\n  File \"/app/.venv/lib/python3.12/site-packages/fastapi/routing.py\", line 166, in app\n    await wrap_app_handling_exceptions(app, request)(scope, receive, send)\n  File \"/app/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py\", line 53, in wrapped_app\n    raise exc\n  File \"/app/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py\", line 42, in wrapped_app\n    await app(scope, receive, sender)\n  File \"/app/.venv/lib/python3.12/site-packages/fastapi/routing.py\", line 152, in app\n    response = await f(request)\n               ^^^^^^^^^^^^^^^^\n  File \"/app/.venv/lib/python3.12/site-packages/app/telemetry/journey.py\", line 150, in tracked_handler\n    response = await handler(request)\n               ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/app/.venv/lib/python3.12/site-packages/fastapi/routing.py\", line 745, in app\n    raw_response = await run_endpoint_function(\n                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/app/.venv/lib/python3.12/site-packages/fastapi/routing.py\", line 372, in run_endpoint_function\n    return await dependant.call(**values)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/app/.venv/lib/python3.12/site-packages/app/api/transcriptions.py\", line 76, in create_transcription\n    transcript = await service.create_transcript(\n                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/app/.venv/lib/python3.12/site-packages/app/services/transcriptions.py\", line 110, in create_transcript\n    text, stored_language, duration = await _transcribe(transcriber, upload, language, project_id)\n                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/app/.venv/lib/python3.12/site-packages/app/services/transcriptions.py\", line 93, in _transcribe\n    log_fields[\"realtime_factor\"] = round(elapsed_ms / 1000 / result.duration_seconds, 4)\n                                          ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~\n",
+        "trace_id": "2ce1c2d828e2eb92bc2f738218737d6b",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:55.923023+00:00"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "06a7d8d9-18ee-4a19-849a-8aa8b3d47dbe",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "2702bf6cfc225c6f",
+        "trace_id": "80066883e425a0450751f43ce70b3140",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:55.299853+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "bc7ad15e-e679-481c-8b10-d9b1e088d4c7",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "155f858398a527f1",
+        "trace_id": "f16a9fcce835314c0589e03c43cde2ae",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:54.296953+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "65e519fc-27d9-4fb7-943e-82978e2b3d98",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "a7d8ddac35e27a53",
+        "trace_id": "e571475a50dc8126911e2a00ecb2067f",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:53.640965+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "6027a11b-ecff-4491-9121-5d5178c773cb",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "939563dfe10f4457",
+        "trace_id": "9dedd4c6cb586d64f567874e62268755",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:52.441272+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "6c50fade-6761-49b4-9dcb-940678dd639a",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "38f2ceccbfd8edd3",
+        "trace_id": "b6dd21ad9af5b35bff7b7158ffed9b84",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:51.802087+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "e17d4cdb-a714-4ce0-b960-8061350dc9d4",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "45ef044237322dc7",
+        "trace_id": "c1992a684e81f262c4b51a6132d7609d",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:50.863350+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "5a41293c-42dc-4367-8065-a25ff8ca09f7",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "3dd7da7c955ed47f",
+        "trace_id": "e654c16120c7af7803557667a7415fa8",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:50.225825+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "9d5f409a-0f4a-46d9-a889-04fdf46f9289",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "da0d06ee3ed22916",
+        "trace_id": "3b8856efc87d93473de5ad26c6e39651",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:48.994877+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "bb73c320-b5c8-4ae8-bcfd-ff145547af39",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "091a62dac16e1d6b",
+        "trace_id": "e3636f0fac2fa604fb13cba7ec2d7bd1",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:48.364810+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "021b0ca0-8cf9-4c26-bd5b-d8481e58bd47",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "6ae881516a072eea",
+        "trace_id": "e9573ab6d53b8e160e400489e8a14bd3",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:47.384048+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "0a7d8c19-ed74-47ca-bcb0-a8bd7ca59cb7",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "a55c7c298f22aed5",
+        "trace_id": "9e06a7574a5b5f518da8d2d33a406533",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:46.734813+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "3cf64c6c-4280-47bd-9cd7-78aec600f08c",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "4214220180cd1016",
+        "trace_id": "82b69b70f0879f3873254c7049a28e25",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:45.487072+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "c0fa8735-9b0a-43ac-b976-c8074c7c5f46",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "0c054d717aed689f",
+        "trace_id": "943ba71b0c789d4eaf04dad890988e9e",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:44.829530+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "592676d1-cf92-48de-8c13-50e28ff68c9e",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "2d55d4b00e310de8",
+        "trace_id": "c56b95edf03d2778ba78230045f6e6e2",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:43.804919+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "5513fb89-8534-4513-91c0-2fcc203de008",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "cf90dcb642c89b4c",
+        "trace_id": "9f9aba0db7d78fb62df971f4560d1b5a",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:43.161088+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "59684949-2d2e-48a2-b57f-bbfb92bc6975",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "3e91dcfe858e4a74",
+        "trace_id": "27539e663f8807f951db68cb9db4bbe9",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:41.906459+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "fd00a2ed-c714-4d8f-90e4-5d2d36ca38f7",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "0736941ec885dfd7",
+        "trace_id": "1bfb241b18b3f96ecc70c27f1e84f757",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:41.244095+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "f2d20c6e-2b3c-4701-862e-b78ef41dbb2c",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "b7781ebb03ea2ea7",
+        "trace_id": "db128631a7e5fb4cceb09a5d787b6308",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:40.247294+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "34cbefc2-b52a-4e99-bf4c-13fc8faf29f0",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "6693f3e7913a7f73",
+        "trace_id": "9643158ef7ed30f441e828c1d4ed47dd",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:39.605513+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "46f30289-48dd-4506-bf38-dd704b375efb",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "3ac9283bfa734fce",
+        "trace_id": "6004f48c635f188155a4d6ce399268b2",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:38.354169+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "deb1aeb0-65d6-4f43-865c-b1b92299a45f",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "51a0538066368dae",
+        "trace_id": "90260c307397737e2970efba828f239c",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:37.727398+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "3a0fde47-55d7-46ae-97d8-71fdebcd01de",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "306fe5ec1486fb82",
+        "trace_id": "479fbc2b8debb902d67c8d406d3458d3",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:36.753209+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "a2ef53de-7553-48de-a811-e2dbf9c0ae13",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "914fbe8318de813a",
+        "trace_id": "1bf059479320501cec735fcee33231b3",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:36.101678+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "8aa7f211-eabb-47c6-a2c8-551e31c7999b",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "1a1ab48aa06f8412",
+        "trace_id": "1930063d21306d6eee4fafa5f4d33d16",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:34.848915+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "50f0fdf7-62ee-4d28-9650-e2e9498fb996",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "96e49bf2e2bb533b",
+        "trace_id": "aed1377bfec812ee50d42d8a2d447c7e",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:34.178624+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "903132a5-7e0d-4596-8ce2-aa55f96af7d0",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "79bc3589e9fbf50e",
+        "trace_id": "9710e796fbe636a3fee58a1dbebbb4e2",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:33.182191+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "7f755223-aa9e-43bb-9fee-649e2157be2b",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "1c56226868fbe301",
+        "trace_id": "7992d5f13f7588341e78a9a89d773bdb",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:32.495189+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "c3f596cf-d156-4729-a0be-c5e407b77198",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "69a513e8173871a5",
+        "trace_id": "bdc96491f2c1300a63a7cc62db371288",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:31.205199+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "f5bf5def-2c6d-4600-838a-4b87b7893fbd",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "ad3e485ad9276b56",
+        "trace_id": "f419aab8c1786573ef68c796a86abfe4",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:30.563292+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "f62d465b-0199-4fa3-abae-fb0b7ead05c5",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "5b04db0f2299e25b",
+        "trace_id": "d748b3ccaecf64a181bd6a5236d4a247",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:29.577739+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "4fe645e1-d6c6-418d-a021-99f4db96790e",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "4561344dba7e7dcf",
+        "trace_id": "2ac3ea0fc33791888b22275efe38e025",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:28.932805+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "1b191c6d-c0f4-471f-b393-3940e3b62e33",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "a1bbc02abe6f36a5",
+        "trace_id": "fdc259d58dc00602d2f1d1db087e670c",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:27.689745+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "16398f44-f252-4fbf-bdb3-4718c073f514",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "5a0490e2c7658527",
+        "trace_id": "1cff23faf9380bbe060003c9b075b3ca",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:27.035176+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "5f58ce90-8696-4f76-add3-8251266cf92d",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "a6b492e49a0aa805",
+        "trace_id": "58bb4f1a5269bb4c5ed62f3e4c5cfce9",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:26.055470+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "16f65d4d-1564-421c-9893-c900cf085373",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "17d9a85fcdd365bc",
+        "trace_id": "521787fdda672a3b4f6b970f43939b0e",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:25.400273+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "670fe2e4-a71a-49a5-a0eb-8b193cdb1211",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "725265252c46c525",
+        "trace_id": "48192165631eeca4b5c031d71fb3145c",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:24.123428+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "ea890bf0-adb3-4f41-8f83-678fb28ada74",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "d4b63df76e170f70",
+        "trace_id": "344ad1bf32a8e5546ef1556c975eb9b2",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:23.470517+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "ce8845a5-2fc6-4c01-970a-c62f64a817b5",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "e68edf79ad5bb99f",
+        "trace_id": "520c8b2f5b62d4ca7d2074e328f1cfec",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:22.502983+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "d40c0ffb-0b02-4dbd-85e1-8ee33f9b5302",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "1d3fa98812a4954c",
+        "trace_id": "a4f5ca662672a4dc90036f3be9722334",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:21.832486+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "cfababe5-a336-42f4-af87-94d80189cc1f",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "5d6f8dea5a7190ef",
+        "trace_id": "723c5d67afae6b4b0df60d2f419013bc",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:20.568945+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "6c63fcaf-fad0-49c1-95c8-6c431eb37f47",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "3b7b6ec734bef201",
+        "trace_id": "55499b36387eec986c8ee941f0f20a39",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:19.944077+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "0e0bddfd-9294-49a9-8f37-3a189f98f346",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "29a3c89240f0989a",
+        "trace_id": "86faa9d3f1f5e2d7f6704bfb0c3ae628",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:18.963385+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "28f7f31e-6d92-4dec-9f51-c0df987c45be",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "483848fd2f75f535",
+        "trace_id": "05e6b055ab3d3ecdbd45be097dd3c180",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:18.330529+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "73b03386-7515-4a1f-8e87-a3f970baee30",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "861d09d70a85edc4",
+        "trace_id": "df3463af7b905d567902a498c5a41ac5",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:17.104908+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "97b49540-9927-4336-867f-4bf2fbe7925a",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "d1b375739a367e4f",
+        "trace_id": "ec6fdb3dd1f9c199a8341636e1999fac",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:16.454698+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "a5117dd8-0414-4374-a475-eb493ed73a7f",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "1ff5e0afaef5ce5a",
+        "trace_id": "2bc5b1ea012ef45fc06cd8daccb2e85c",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:15.470245+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "8ec504a5-74cd-4a1d-8a47-a375132cfbd5",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "e58b0cae1328b830",
+        "trace_id": "a14c1c6a4adfd79f0cdf2dc22616f516",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:14.834982+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "e9cce390-7e89-4cb1-9e21-d7dd7073ea74",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "45ce42c889535aa7",
+        "trace_id": "d25cee8aa0586bca386b35b808763a48",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:12.891711+00:00",
+        "stack_trace_omitted": "duplicate"
+      },
+      {
+        "detected_level": "error",
+        "exc_type": "ZeroDivisionError",
+        "logger": "app.error",
+        "request_id": "d1e52f4a-bcdb-444a-b8e0-695f43a2960e",
+        "scope_name": "app.error",
+        "severity_text": "ERROR",
+        "span_id": "aacc5df9d6078a1d",
+        "trace_id": "6392c86d5dae6aa64928f9db794e7cb7",
+        "message": "unhandled exception",
+        "timestamp": "2026-11-11T05:18:12.249538+00:00",
+        "stack_trace_omitted": "duplicate"
+      }
+    ]
+  },
+  "traces": [
+    {
+      "trace_id": "2ce1c2d828e2eb92bc2f738218737d6b",
+      "span_count": 3,
+      "spans": [
+        {
+          "span_id": "b9311dcccdff5dc0",
+          "parent_span_id": null,
+          "name": "POST /api/projects/{projectId}/transcriptions",
+          "kind": "SPAN_KIND_SERVER",
+          "status": "STATUS_CODE_ERROR",
+          "duration_ms": 5.0,
+          "attributes": {
+            "error.type": "500",
+            "http.request.method": "POST",
+            "http.response.status_code": "500",
+            "http.route": "/api/projects/{projectId}/transcriptions"
+          },
+          "events": []
+        },
+        {
+          "span_id": "c0536581c22552d9",
+          "parent_span_id": "b9311dcccdff5dc0",
+          "name": "transcription.create",
+          "kind": "SPAN_KIND_INTERNAL",
+          "status": "STATUS_CODE_ERROR",
+          "duration_ms": 2.67,
+          "attributes": {
+            "echonotes.project_id": "029ab633-6f7c-4dd3-90af-bf7c188688a7",
+            "echonotes.language": "en",
+            "echonotes.audio.size_bytes": "44",
+            "echonotes.provider": "fake",
+            "echonotes.status": "server_error",
+            "error.type": "ZeroDivisionError"
+          },
+          "events": []
+        },
+        {
+          "span_id": "13d0631a253e10f6",
+          "parent_span_id": "c0536581c22552d9",
+          "name": "SELECT",
+          "kind": "SPAN_KIND_CLIENT",
+          "status": null,
+          "duration_ms": 0.53,
+          "attributes": {
+            "db.system": "postgresql",
+            "db.operation": "SELECT"
+          },
+          "events": []
+        }
+      ]
+    },
+    {
+      "trace_id": "80066883e425a0450751f43ce70b3140",
+      "span_count": 3,
+      "spans": [
+        {
+          "span_id": "2702bf6cfc225c6f",
+          "parent_span_id": null,
+          "name": "POST /api/projects/{projectId}/transcriptions",
+          "kind": "SPAN_KIND_SERVER",
+          "status": "STATUS_CODE_ERROR",
+          "duration_ms": 6.37,
+          "attributes": {
+            "error.type": "500",
+            "http.request.method": "POST",
+            "http.response.status_code": "500",
+            "http.route": "/api/projects/{projectId}/transcriptions"
+          },
+          "events": []
+        },
+        {
+          "span_id": "d1384ca5c2889a26",
+          "parent_span_id": "2702bf6cfc225c6f",
+          "name": "transcription.create",
+          "kind": "SPAN_KIND_INTERNAL",
+          "status": "STATUS_CODE_ERROR",
+          "duration_ms": 3.56,
+          "attributes": {
+            "echonotes.project_id": "029ab633-6f7c-4dd3-90af-bf7c188688a7",
+            "echonotes.language": "en",
+            "echonotes.audio.size_bytes": "44",
+            "echonotes.provider": "fake",
+            "echonotes.status": "server_error",
+            "error.type": "ZeroDivisionError"
+          },
+          "events": []
+        },
+        {
+          "span_id": "9c3900549e22452d",
+          "parent_span_id": "d1384ca5c2889a26",
+          "name": "SELECT",
+          "kind": "SPAN_KIND_CLIENT",
+          "status": null,
+          "duration_ms": 0.74,
+          "attributes": {
+            "db.system": "postgresql",
+            "db.operation": "SELECT"
+          },
+          "events": []
+        }
+      ]
+    },
+    {
+      "trace_id": "f16a9fcce835314c0589e03c43cde2ae",
+      "span_count": 3,
+      "spans": [
+        {
+          "span_id": "155f858398a527f1",
+          "parent_span_id": null,
+          "name": "POST /api/projects/{projectId}/transcriptions",
+          "kind": "SPAN_KIND_SERVER",
+          "status": "STATUS_CODE_ERROR",
+          "duration_ms": 5.33,
+          "attributes": {
+            "error.type": "500",
+            "http.request.method": "POST",
+            "http.response.status_code": "500",
+            "http.route": "/api/projects/{projectId}/transcriptions"
+          },
+          "events": []
+        },
+        {
+          "span_id": "8e92a7179775f4ac",
+          "parent_span_id": "155f858398a527f1",
+          "name": "transcription.create",
+          "kind": "SPAN_KIND_INTERNAL",
+          "status": "STATUS_CODE_ERROR",
+          "duration_ms": 2.96,
+          "attributes": {
+            "echonotes.project_id": "029ab633-6f7c-4dd3-90af-bf7c188688a7",
+            "echonotes.language": "en",
+            "echonotes.audio.size_bytes": "44",
+            "echonotes.provider": "fake",
+            "echonotes.status": "server_error",
+            "error.type": "ZeroDivisionError"
+          },
+          "events": []
+        },
+        {
+          "span_id": "b881da16ae51d7e4",
+          "parent_span_id": "8e92a7179775f4ac",
+          "name": "SELECT",
+          "kind": "SPAN_KIND_CLIENT",
+          "status": null,
+          "duration_ms": 0.63,
+          "attributes": {
+            "db.system": "postgresql",
+            "db.operation": "SELECT"
+          },
+          "events": []
+        }
+      ]
+    }
+  ],
+  "git": {
+    "deployed_commit": "66ceb74f40fec7b66b70b8522ae46bedea0f3e91",
+    "deployed_commit_known_locally": true,
+    "recent_commits": [
+      {
+        "sha": "66ceb74f40fec7b66b70b8522ae46bedea0f3e91",
+        "subject": "perf(transcription): log the real-time factor of each transcription"
+      },
+      {
+        "sha": "db3f6f406af84790785e24d51b4c9eeec35cd9c0",
+        "subject": "feat(oncall): alert-driven responder agent with policy enforced in code (#52)"
+      },
+      {
+        "sha": "700b030ba5d8e67dde0a34d2d5fc82ce89beffdd",
+        "subject": "feat(observability): local LGTM stack, journey dashboard and user-impact alert (#53)"
+      },
+      {
+        "sha": "af1a68406a9353cfe3757776f33ce8d70242c03d",
+        "subject": "feat(telemetry): OpenTelemetry traces, metrics and logs sharing trace_id (#51)"
+      },
+      {
+        "sha": "cb1704295aa763c7ab8b4bf1cac5ab2f73185ed2",
+        "subject": "docs(spec): add M4 stories US-18..US-21 and align observability plan with P4 (Refs #29 #30 #31 #32 #33)"
+      },
+      {
+        "sha": "58ecb25ef45978ce89535f95862249cefbd32d0e",
+        "subject": "docs: add P4 prompt (observability and on-call)"
+      },
+      {
+        "sha": "152956a40dbf35548789360b1c28360ee653ae8e",
+        "subject": "docs: live deployment, release process with run evidence, README live demo, P3 report (Refs #28)"
+      },
+      {
+        "sha": "ebdef9875bd032edf63f20533e6d5582c9c5c186",
+        "subject": "ci(cd): auto deploy to dev, gated prod promotion, rollback workflow (#49)"
+      },
+      {
+        "sha": "875b2f85bb2692c5b5966754b48ac5caecbc6f65",
+        "subject": "feat(health): expose deployed commit and environment, UI footer (#50)"
+      },
+      {
+        "sha": "3b6a12111bfd15b32158934136a2462c8929dac9",
+        "subject": "docs(process): record branch protection on main (Refs #48)"
+      }
+    ],
+    "files_touched_by_deployed_commit": [
+      "backend/app/services/transcriptions.py"
+    ]
+  },
+  "sources": [
+    {
+      "source": "app",
+      "path": "/api/health",
+      "status": 200
+    },
+    {
+      "source": "grafana",
+      "path": "/api/datasources/proxy/uid/prometheus/api/v1/query",
+      "status": 200
+    },
+    {
+      "source": "grafana",
+      "path": "/api/datasources/proxy/uid/prometheus/api/v1/query",
+      "status": 200
+    },
+    {
+      "source": "grafana",
+      "path": "/api/datasources/proxy/uid/prometheus/api/v1/query",
+      "status": 200
+    },
+    {
+      "source": "grafana",
+      "path": "/api/datasources/proxy/uid/prometheus/api/v1/query",
+      "status": 200
+    },
+    {
+      "source": "grafana",
+      "path": "/api/datasources/proxy/uid/prometheus/api/v1/query",
+      "status": 200
+    },
+    {
+      "source": "grafana",
+      "path": "/api/datasources/proxy/uid/loki/loki/api/v1/query_range",
+      "status": 200
+    },
+    {
+      "source": "grafana",
+      "path": "/api/datasources/proxy/uid/tempo/api/traces/2ce1c2d828e2eb92bc2f738218737d6b",
+      "status": 200
+    },
+    {
+      "source": "grafana",
+      "path": "/api/datasources/proxy/uid/tempo/api/traces/80066883e425a0450751f43ce70b3140",
+      "status": 200
+    },
+    {
+      "source": "grafana",
+      "path": "/api/datasources/proxy/uid/tempo/api/traces/f16a9fcce835314c0589e03c43cde2ae",
+      "status": 200
+    }
+  ],
+  "collection_errors": []
+}

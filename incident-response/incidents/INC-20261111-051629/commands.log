@@ -1,0 +1,14 @@
+[2026-11-11T05:18:55+00:00] incident INC-20261111-051629 opened for echonotes-transcription-failure-ratio:dcedafa3246b9baf
+[2026-11-11T05:18:55+00:00] $ '~\AppData\Local\uv\cache\environments-v2\responder-e91754e14ee671e4\Scripts\python.exe' '<repo>\incident-response\collect_evidence.py' --incident-id INC-20261111-051629 --out '<repo>\incident-response\incidents\INC-20261111-051629\evidence.json' --repo '<repo>' --alert '<repo>\incident-response\incidents\INC-20261111-051629\alert.json'  (cwd=<repo>)
+[2026-11-11T05:19:14+00:00]   -> exit 0 in 19.11s
+[2026-11-11T05:19:14+00:00] $ git -c 'core.hooksPath=<empty>' worktree add -b oncall/INC-20261111-051629 '~\AppData\Local\Temp\echonotes-oncall\oncall-INC-20261111-051629' 66ceb74f40fec7b66b70b8522ae46bedea0f3e91  (cwd=<repo>)
+[2026-11-11T05:19:14+00:00]   -> exit 0 in 0.29s
+[2026-11-11T05:19:14+00:00] $ uv sync --frozen --quiet  (cwd=~\AppData\Local\Temp\echonotes-oncall\oncall-INC-20261111-051629\backend)
+[2026-11-11T05:19:18+00:00]   -> exit 0 in 3.63s
+[2026-11-11T05:19:18+00:00] $ claude.EXE -p --model opus --output-format json --json-schema '<schema>' --max-turns 40 --max-budget-usd 3.0 --tools Read,Grep,Glob,Edit,Write,Bash --allowedTools Read Grep Glob Edit Write 'Bash(uv run pytest:*)' 'Bash(uv run ruff:*)' --disallowedTools 'Read(**/.env*)' 'Edit(**/.env*)' 'Write(**/.env*)' WebFetch WebSearch Task 'Bash(git push:*)' 'Bash(git commit:*)' 'Bash(gh:*)' 'Bash(curl:*)' 'Bash(wget:*)' 'Bash(docker:*)' 'Bash(uv add:*)' 'Bash(uv pip:*)' 'Bash(pip:*)' --permission-mode dontAsk --strict-mcp-config --setting-sources project --no-session-persistence  (cwd=~\AppData\Local\Temp\echonotes-oncall\oncall-INC-20261111-051629)
+[2026-11-11T05:19:20+00:00]   -> exit 1 in 1.82s
+[2026-11-11T05:19:20+00:00] agent stderr (last line): Error: --json-schema is not a valid JSON Schema: no schema with key or ref "https://json-schema.org/draft/2020-12/schema"
+[2026-11-11T05:19:20+00:00] agent: subtype=None turns=None cost_usd=None models=None
+[2026-11-11T05:19:20+00:00] diff: 0 file(s), 0 changed lines
+[2026-11-11T05:19:20+00:00] policy decision: escalate failed=['agent_run_completed', 'response_matches_schema', 'proposed_action_allowed', 'confidence_at_least_minimum', 'diff_not_empty', 'test_added_or_changed']
+[2026-11-11T05:19:20+00:00] ESCALATE: policy checks failed

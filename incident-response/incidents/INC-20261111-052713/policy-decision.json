@@ -1,0 +1,116 @@
+{
+  "decision": "apply_fix",
+  "failed_checks": [],
+  "checks": [
+    {
+      "name": "agent_run_completed",
+      "passed": true,
+      "detail": "subtype=success"
+    },
+    {
+      "name": "response_matches_schema",
+      "passed": true,
+      "detail": "valid"
+    },
+    {
+      "name": "proposed_action_allowed",
+      "passed": true,
+      "detail": "proposed_action='apply_fix', allowed=['apply_fix']"
+    },
+    {
+      "name": "confidence_at_least_minimum",
+      "passed": true,
+      "detail": "confidence=0.95, minimum=0.6"
+    },
+    {
+      "name": "diff_not_empty",
+      "passed": true,
+      "detail": "2 changed file(s)"
+    },
+    {
+      "name": "paths_allowed",
+      "passed": true,
+      "detail": "all inside"
+    },
+    {
+      "name": "only_regular_files",
+      "passed": true,
+      "detail": "regular files"
+    },
+    {
+      "name": "max_changed_lines",
+      "passed": true,
+      "detail": "14 changed lines, max 60"
+    },
+    {
+      "name": "max_changed_files",
+      "passed": true,
+      "detail": "2 files, max 5"
+    },
+    {
+      "name": "no_tests_removed",
+      "passed": true,
+      "detail": "no test file deleted, no test function removed"
+    },
+    {
+      "name": "test_added_or_changed",
+      "passed": true,
+      "detail": "12 added test lines in ['backend/tests/unit/test_transcriptions_api.py']"
+    },
+    {
+      "name": "report_matches_diff",
+      "passed": true,
+      "detail": "agent claimed ['backend/app/services/transcriptions.py', 'backend/tests/unit/test_transcriptions_api.py'], git diff shows ['backend/app/services/transcriptions.py', 'backend/tests/unit/test_transcriptions_api.py']"
+    },
+    {
+      "name": "commit_matches_evaluated_diff",
+      "passed": true,
+      "detail": "candidate commit == evaluated diff"
+    },
+    {
+      "name": "no_secrets_in_diff",
+      "passed": true,
+      "detail": "no secret patterns in added lines"
+    },
+    {
+      "name": "new_test_fails_before_fix",
+      "passed": true,
+      "detail": "pytest exit 1 on the deployed code (want 1 = failed, with a pytest 'failed' summary)"
+    },
+    {
+      "name": "unit_tests_pass",
+      "passed": true,
+      "detail": "exit 0"
+    },
+    {
+      "name": "lint_pass",
+      "passed": true,
+      "detail": "exit 0"
+    },
+    {
+      "name": "format_pass",
+      "passed": true,
+      "detail": "exit 0"
+    }
+  ],
+  "changed_files": [
+    {
+      "path": "backend/app/services/transcriptions.py",
+      "status": "M",
+      "mode": "100644",
+      "added": 1,
+      "deleted": 1,
+      "tests_removed": 0
+    },
+    {
+      "path": "backend/tests/unit/test_transcriptions_api.py",
+      "status": "M",
+      "mode": "100644",
+      "added": 12,
+      "deleted": 0,
+      "tests_removed": 0
+    }
+  ],
+  "changed_lines": 14,
+  "evaluated_at": "2026-11-11T05:31:57.892717+00:00"
+}

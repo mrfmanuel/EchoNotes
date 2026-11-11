@@ -1,0 +1,106 @@
+{
+  "decision": "escalate",
+  "failed_checks": [
+    "agent_run_completed",
+    "response_matches_schema",
+    "proposed_action_allowed",
+    "confidence_at_least_minimum",
+    "diff_not_empty",
+    "test_added_or_changed"
+  ],
+  "checks": [
+    {
+      "name": "agent_run_completed",
+      "passed": false,
+      "detail": "subtype=None"
+    },
+    {
+      "name": "response_matches_schema",
+      "passed": false,
+      "detail": "agent returned no JSON answer"
+    },
+    {
+      "name": "proposed_action_allowed",
+      "passed": false,
+      "detail": "proposed_action=None, allowed=['apply_fix']"
+    },
+    {
+      "name": "confidence_at_least_minimum",
+      "passed": false,
+      "detail": "confidence=None, minimum=0.6"
+    },
+    {
+      "name": "diff_not_empty",
+      "passed": false,
+      "detail": "0 changed file(s)"
+    },
+    {
+      "name": "paths_allowed",
+      "passed": true,
+      "detail": "all inside"
+    },
+    {
+      "name": "only_regular_files",
+      "passed": true,
+      "detail": "regular files"
+    },
+    {
+      "name": "max_changed_lines",
+      "passed": true,
+      "detail": "0 changed lines, max 60"
+    },
+    {
+      "name": "max_changed_files",
+      "passed": true,
+      "detail": "0 files, max 5"
+    },
+    {
+      "name": "no_tests_removed",
+      "passed": true,
+      "detail": "no test file deleted, no test function removed"
+    },
+    {
+      "name": "test_added_or_changed",
+      "passed": false,
+      "detail": "0 added test lines in []"
+    },
+    {
+      "name": "report_matches_diff",
+      "passed": true,
+      "detail": "agent claimed [], git diff shows []"
+    },
+    {
+      "name": "commit_matches_evaluated_diff",
+      "passed": null,
+      "detail": "skipped"
+    },
+    {
+      "name": "no_secrets_in_diff",
+      "passed": null,
+      "detail": "skipped"
+    },
+    {
+      "name": "new_test_fails_before_fix",
+      "passed": null,
+      "detail": "skipped"
+    },
+    {
+      "name": "unit_tests_pass",
+      "passed": null,
+      "detail": "skipped (an earlier check failed)"
+    },
+    {
+      "name": "lint_pass",
+      "passed": null,
+      "detail": "skipped (an earlier check failed)"
+    },
+    {
+      "name": "format_pass",
+      "passed": null,
+      "detail": "skipped (an earlier check failed)"
+    }
+  ],
+  "changed_files": [],
+  "changed_lines": 0,
+  "evaluated_at": "2026-11-11T05:19:20.334682+00:00"
+}

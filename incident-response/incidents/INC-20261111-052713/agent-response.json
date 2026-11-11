@@ -1,0 +1,48 @@
+{
+  "response": {
+    "root_cause": "backend/app/services/transcriptions.py:93 (added by commit c65a326, 'log the real-time factor') computes `elapsed_ms / 1000 / result.duration_seconds` and only guards against None. When the provider reports a duration of 0.0, this raises ZeroDivisionError and the request returns 500 (status=server_error). Only very short uploads trigger it. The fake provider computes the duration as round(size / 16000, 2), so any file under about 80 bytes gets 0.0 s. Every failing trace has echonotes.audio.size_bytes=44, which is an empty WAV header. Normal-length uploads have a positive duration and succeed.",
+    "evidence_used": [
+      "logs: 50+ ERROR 'unhandled exception' lines with exc_type=ZeroDivisionError; stack trace ends at app/services/transcriptions.py line 93 in _transcribe: realtime_factor = round(elapsed_ms / 1000 / result.duration_seconds, 4)",
+      "traces 832f1a84f3e0fd14a4ce834884348d69, e64499953538a5110cf09c565e16f2d8, 1060bb6d4280b018e5e0c935c821fdac: transcription.create error.type=ZeroDivisionError, echonotes.audio.size_bytes=44, provider=fake, HTTP 500",
+      "metric transcriptions_by_status_5m: provider=fake status=server_error ~73 vs success ~110; failure_ratio_2m=0.40",
+      "commit c65a32694456a16381b5af69e7aeba029a6bfa9c 'perf(transcription): log the real-time factor of each transcription' is deployed and touched only backend/app/services/transcriptions.py"
+    ],
+    "files_changed": [
+      "backend/app/services/transcriptions.py",
+      "backend/tests/unit/test_transcriptions_api.py"
+    ],
+    "tests_added": [
+      "backend/tests/unit/test_transcriptions_api.py::test_upload_of_audio_with_zero_duration_returns_201"
+    ],
+    "confidence": 0.95,
+    "proposed_action": "apply_fix",
+    "summary": "INC-20261111-052713: about 40% of transcriptions failed with HTTP 500 after commit c65a326 was deployed. That commit added a real-time-factor log field. It divides by the audio duration the provider reports and only checks for None, so very short clips with a reported duration of 0.0 s (here, 44-byte empty WAV files) raised ZeroDivisionError. The fix changes the guard to a truthiness check: the factor is logged only when the duration is positive, and the transcript is still created. A new unit test uploads a 44-byte WAV through the fake provider and expects 201. It failed with ZeroDivisionError before the fix and passes after. All 457 unit tests pass, and ruff check and ruff format --check are clean. The log fields are unchanged apart from leaving out realtime_factor in that case. No transcript text, titles or filenames are logged."
+  },
+  "schema_errors": [],
+  "run": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "num_turns": 16,
+    "duration_ms": 101741,
+    "total_cost_usd": 0.4704566,
+    "session_id": "ddb20180-23db-4d27-8b63-936a15a88308",
+    "terminal_reason": "completed",
+    "permission_denials": [
+      {
+        "tool_name": "Bash",
+        "tool_use_id": "toolu_01YBLwr4eTY3Lh7HoZNYwJpU",
+        "tool_input": {
+          "command": "cd backend && uv run pytest -m \"not integration\" -q 2>&1 | tail -3 && uv run ruff check . && uv run ruff format --check . && cd .. && git diff --stat",
+          "description": "Rerun unit tests, lint, diff stat"
+        }
+      }
+    ],
+    "models": [
+      "claude-opus-5-5"
+    ],
+    "exit_code": 0,
+    "timed_out": false,
+    "wall_seconds": 102.82
+  }
+}

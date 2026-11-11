@@ -1,0 +1,12 @@
+{
+  "response": null,
+  "schema_errors": [
+    "agent returned no JSON answer"
+  ],
+  "run": {
+    "parse_error": "stdout is not JSON",
+    "exit_code": 1,
+    "timed_out": false,
+    "wall_seconds": 1.82
+  }
+}

@@ -839,8 +839,8 @@
     },
     {
       "type": "logs",
-      "title": "Recent error logs (Loki)",
-      "description": "ERROR/CRITICAL records of echonotes-api. Expand a line and use the trace_id link to open the trace in Tempo. Logs carry IDs, status codes, error classes and stack frames only, never user content.",
+      "title": "Recent failure logs: WARN, ERROR, FATAL (Loki)",
+      "description": "WARN/ERROR/FATAL records of echonotes-api: provider errors and timeouts (502/504) log at WARN, unhandled exceptions (500) at ERROR. Expand a line and use the trace_id link to open the trace in Tempo. Logs carry IDs, status codes, error classes and stack frames only, never user content.",
       "datasource": {
         "type": "loki",
         "uid": "loki"
@@ -852,7 +852,7 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "{service_name=\"echonotes-api\"} | severity_text=~\"ERROR|FATAL\"",
+          "expr": "{service_name=\"echonotes-api\"} | severity_text=~\"WARN|ERROR|FATAL\"",
           "queryType": "range"
         }
       ],

@@ -50,6 +50,7 @@ flowchart LR
 ```bash
 make obs-up          # app + Postgres + lgtm, waits until healthy, prints the URLs
 make smoke           # optional: drive the key journey once (fake transcriber)
+make obs-rebuild-app # rebuild ONLY the app (e.g. after a fix), telemetry kept on
 make obs-down        # stop everything (database volume kept; telemetry is discarded)
 ```
 
@@ -111,7 +112,7 @@ sum(rate(http_server_request_duration_seconds_count{http_response_status_code=~"
 sum by (status) (increase(echonotes_exports_total[15m]))
 ```
 - The app exports every 5 s (`OTEL_METRIC_EXPORT_INTERVAL`), and the Prometheus datasource uses `timeInterval: 5s`.
-- **`increase()` and new series:** Prometheus sees the first sample of a new counter series (for example the first `server_error` after a restart) without a starting zero, so `increase()` misses that one request. A real incident produces many failures, so this does not change when the alert fires.
+- **`increase()`, new series and restarts:** a counter series (one per `provider`/`status` and app process) appears in Prometheus at its **first export**. `increase()` has no zero before that sample, so it misses **everything counted before the first export** of the series. That is up to one export interval (5 s) of requests, not just one request. QA observed that 4 of 4 provider errors right after an app restart counted as 0, and 3 server errors as about 1. So a short burst of a new failure mode, right after a restart, can be invisible to the alert. A sustained incident keeps adding samples and is counted from the second export on. An app restart starts new series (new `service_instance_id`), and the same applies again.
 
 ### Traces (Tempo)
 
@@ -129,20 +130,21 @@ sum by (status) (increase(echonotes_exports_total[15m]))
 
 - The JSON stdout lines (see [Logging](#logging-m2)) gain `trace_id` and `span_id` next to `request_id`. The same records are exported over OTLP and land in Loki.
 - **Loki stream labels** (index): only `service_name`, `deployment_environment`, `deployment_environment_name` and `service_instance_id`. Everything else is **structured metadata** on each line and is filtered after the selector **without `| json`**: `severity_text`, `detected_level`, `trace_id`, `span_id`, `request_id`, `logger` (e.g. `app.access`), `route`, `status`, `exc_type`, `stack_trace` and the other safe fields of the stdout line. The log body is the message.
-- **LogQL, error logs of the API** (used by the dashboard, the runbook and the responder):
+- **LogQL, failure logs of the API** (used by the dashboard panel *Recent failure logs*, the runbook and the responder):
 
 ```logql
-{service_name="echonotes-api"} | severity_text=~"ERROR|FATAL"
+{service_name="echonotes-api"} | severity_text=~"WARN|ERROR|FATAL"
 ```
 
-The OTLP severity names are `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL` (Python `WARNING` → `WARN`, `CRITICAL` → `FATAL`). `| detected_level="error"` works too.
+`WARN` must be included. Provider failures and timeouts (502/504) log at `WARN` (`transcription failed` with `status_code`, `transcription timed out`), and only unhandled exceptions (500) log at `ERROR` with `exc_type` and `stack_trace`. An `ERROR|FATAL` filter is empty during a Groq outage. The OTLP severity names are `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL` (Python `WARNING` → `WARN`, `CRITICAL` → `FATAL`).
 
 | Question | LogQL |
 |---|---|
 | All API logs | `{service_name="echonotes-api"}` |
 | Logs of one trace | `{service_name="echonotes-api"} \| trace_id="<32 hex>"` |
 | Failed transcriptions with their error class | `{service_name="echonotes-api"} \| severity_text="ERROR" \| exc_type!=""` |
-| Error lines per minute | `sum(count_over_time({service_name="echonotes-api"} \| severity_text=~"ERROR\|FATAL" [1m]))` |
+| Provider failures and timeouts (502/504) | `{service_name="echonotes-api"} \| severity_text="WARN" \| logger="app.services.transcriptions"` |
+| Failure lines per minute | `sum(count_over_time({service_name="echonotes-api"} \| severity_text=~"WARN\|ERROR\|FATAL" [1m]))` |
 | Lines by severity | `sum by (severity_text) (count_over_time({service_name="echonotes-api"}[15m]))` |
 | Access lines of the transcription route | `{service_name="echonotes-api"} \| logger="app.access" \| route="/api/projects/{projectId}/transcriptions"` |
 
@@ -163,7 +165,7 @@ File `observability/dashboard.json`, uid **`echonotes-journey`**, folder *EchoNo
 |---|---|
 | Key journey | Transcriptions (5 m) · **Transcription failure ratio (2 m), the alert input** · p95 transcription latency · Export success ratio · Transcriptions by status per minute · Failure ratio over time with the 20 % threshold and the request count · Latency p50/p95 by provider · Exports by status |
 | HTTP | Request rate by route · 5xx ratio (all endpoints) · p95 latency by route |
-| Logs and traces | Recent error logs (Loki, with trace links) · Failing traces (Tempo) · Journey traces `transcription.create` / `export.build` (Tempo) |
+| Logs and traces | Recent failure logs `WARN`/`ERROR`/`FATAL` (Loki, with trace links) · Failing traces (Tempo) · Journey traces `transcription.create` / `export.build` (Tempo) |
 
 The dashboard links to the [runbook](runbooks/transcription-failures.md).
 
@@ -197,7 +199,18 @@ and on()
 ```
 
 - **Why this is user impact:** each sample is a user's upload that did not become a transcript. `client_error` (wrong file type, too large, unknown project) is excluded: it is the user's input, not an outage. `server_error` is included, so an unhandled bug in the transcription path pages too. CPU and memory are never alerted on.
+- **Rebuilding the app** of a running obs stack must keep the endpoint: use `make obs-rebuild-app`. A plain `docker compose up --build app` turns telemetry off, the rule goes NoData → Normal, and that looks like a recovery ([runbook](runbooks/transcription-failures.md#4-verify-recovery)).
 - **Notification payload:** Grafana's webhook JSON (`status` `firing`/`resolved`, `alerts[].labels`, `annotations`, `values.A` = the measured ratio, `fingerprint`, `ruleUID`, `dashboardURL`, `panelURL`, `generatorURL`). A real sample: [`observability/samples/alert-webhook-sample.json`](../observability/samples/alert-webhook-sample.json). The responder de-duplicates on `ruleUID`/`fingerprint`.
+
+<a id="alert-design-limits"></a>
+### Design limits (known, accepted for M4)
+
+The minimum count and `noDataState: OK` keep the alert quiet on low traffic. They also have consequences that the on-call responder and humans must know:
+
+- **It resolves when traffic drops, not only when failures stop.** The rule resolves as soon as the (extrapolated) count in the 2 min window falls below 5. QA saw it resolve while the ratio was still 33 %. Recovery is proved by fresh successful samples, not by the `resolved` notification ([runbook § 4](runbooks/transcription-failures.md#4-verify-recovery)).
+- **A completely down app never pages.** No requests, or no metrics because the app or its exporter is down, means no data, which is Normal. The same happens when the app is rebuilt without the OTLP endpoint.
+- **Short bursts right after a restart can be invisible.** See *`increase()`, new series and restarts* above.
+- **Follow-up idea (future):** a second rule on availability, for example `absent_over_time(target_info{job="echonotes-api"}[2m])` (the app stopped exporting) or a synthetic `/api/health` probe, plus a no-traffic rule during expected usage. It is not part of M4. It should be tracked as an issue labelled `future`.
 
 ## Evidence API (for the responder and for humans)
 
@@ -207,7 +220,7 @@ Read-only queries go through **Grafana's datasource proxy** with basic auth, so 
 |---|---|---|
 | Prometheus instant query | `/api/datasources/proxy/uid/prometheus/api/v1/query` | `query=sum by (status) (increase(echonotes_transcriptions_total[5m]))` |
 | Prometheus range query | `/api/datasources/proxy/uid/prometheus/api/v1/query_range` | `query=…&start=<unix s>&end=<unix s>&step=15` |
-| Loki logs | `/api/datasources/proxy/uid/loki/loki/api/v1/query_range` | `query={service_name="echonotes-api"} \| severity_text=~"ERROR\|FATAL"&start=<ns>&end=<ns>&limit=20&direction=backward` |
+| Loki logs | `/api/datasources/proxy/uid/loki/loki/api/v1/query_range` | `query={service_name="echonotes-api"} \| severity_text=~"WARN\|ERROR\|FATAL"&start=<ns>&end=<ns>&limit=20&direction=backward` |
 | Tempo search | `/api/datasources/proxy/uid/tempo/api/search` | `q={resource.service.name="echonotes-api" && status=error}&start=<unix s>&end=<unix s>&limit=3` |
 | Tempo trace | `/api/datasources/proxy/uid/tempo/api/traces/<trace id>` | header `Accept: application/json` |
 | Alert state | `/api/prometheus/grafana/api/v1/rules` | (Grafana-managed rules, state `inactive`/`pending`/`firing`) |
@@ -231,7 +244,7 @@ The stack was built in parallel with the instrumentation (#29), so it was first 
 
 Then **with the real app** (the image built from the #29 PR head `2f4d7f1`, same private stack, `scripts/smoke.sh` three times with the fake provider):
 
-- Every key-journey and HTTP panel shows data. *Recent error logs* and *Failing traces* are empty, as expected for healthy traffic. They were covered by the synthetic run.
+- Every key-journey and HTTP panel shows data. *Recent failure logs* and *Failing traces* are empty, as expected for healthy traffic. They were covered by the synthetic run.
 - The access line of `POST /api/projects/{projectId}/transcriptions` in Loki carries `trace_id`. That trace in Tempo has the server span, `transcription.create` and the SQLAlchemy spans. `{service_name="echonotes-api"} | trace_id="<id>"` returns its three log lines (`app.access` and two `app.services.transcriptions`).
 - A plain `docker compose up` (no profile) starts only `db` and `app`, and the app container's `OTEL_EXPORTER_OTLP_ENDPOINT` is empty.
 

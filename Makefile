@@ -15,7 +15,7 @@ OBS_COMPOSE := OBS_OTLP_ENDPOINT=http://lgtm:4318 docker compose --profile obser
 TEST_DATABASE_URL ?= postgresql+psycopg://echonotes_test:echonotes_test@localhost:55432/echonotes_test
 
 .PHONY: help test test-unit test-backend test-frontend lint up down smoke testdb-up testdb-down \
-	obs-up obs-down
+	obs-up obs-down obs-rebuild-app
 
 help: ## Show the available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -56,6 +56,13 @@ obs-up: ## App + Postgres + Grafana LGTM (Collector, Prometheus, Loki, Tempo); p
 	@echo "App:       http://localhost:$(SHOW_APP_PORT)"
 	@echo "Grafana:   http://localhost:$(SHOW_GRAFANA_PORT)  (admin/admin, local only)"
 	@echo "Dashboard: http://localhost:$(SHOW_GRAFANA_PORT)/d/echonotes-journey"
+
+# Rebuild ONLY the app of a running obs stack (same COMPOSE_PROJECT_NAME / ports), keeping the
+# OTLP endpoint. A plain `docker compose up --build app` would turn telemetry off, the alert would
+# go NoData -> OK and look like a recovery.
+obs-rebuild-app: ## Rebuild and restart only the app of the obs stack, telemetry kept on
+	GIT_SHA=$$(git rev-parse HEAD 2>/dev/null || echo unknown) $(OBS_COMPOSE) up --build -d --wait app
+	@echo "App: http://localhost:$(SHOW_APP_PORT)  (exports to lgtm:4318)"
 
 obs-down: ## Stop app, Postgres and the observability stack (keeps the database volume)
 	$(OBS_COMPOSE) down

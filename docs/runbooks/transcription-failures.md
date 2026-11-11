@@ -19,7 +19,10 @@ Users upload or record audio and get an error instead of a transcript. The key j
 - The UI shows a "transcription failed" error after an upload or recording.
 - The API returns **500**, **502** or **504** on `POST /api/projects/{id}/transcriptions`.
 - On the dashboard, *Transcription failure ratio* is above the red 20 % line and *Transcriptions by status* shows `provider_error`, `timeout` or `server_error`.
-- *Recent error logs* shows `ERROR` lines from `echonotes-api`.
+- *Recent failure logs* shows lines from `echonotes-api`:
+  - `WARN` for provider failures and timeouts (502/504): `transcription failed`, `transcription timed out`.
+  - `ERROR` for unhandled exceptions (500), with `exc_type` and `stack_trace`.
+  - The panel query is `{service_name="echonotes-api"} | severity_text=~"WARN|ERROR|FATAL"`. An `ERROR`-only filter misses every Groq incident.
 
 ## 1. Confirm and size it (2 min)
 
@@ -48,7 +51,7 @@ curl -s http://localhost:8000/api/health    # deployed commit + environment
 
 Most likely after a deploy. The fake provider can produce it too, because it is our code, not Groq.
 
-1. **Logs:** *Recent error logs* or Explore → Loki:
+1. **Logs:** *Recent failure logs* or Explore → Loki:
    `{service_name="echonotes-api"} | severity_text="ERROR" | exc_type!=""`.
    Read `exc_type` and the stack frames (`stack_trace` on the stdout line; in Loki the record links to its trace). The last frame in `app/` is usually the faulty line.
 2. **Trace:** expand the log line → *Open trace in Tempo* (or panel *Failing traces*). Check which span failed (`transcription.create`, the DB span, `groq.transcribe`) and its `error.type`.
@@ -58,7 +61,7 @@ Most likely after a deploy. The fake provider can produce it too, because it is 
 
 ### `provider_error` (502): Groq answered with an error or could not be reached
 
-1. Loki: `{service_name="echonotes-api"} | severity_text=~"WARN|ERROR"`. Open a failing trace and check the upstream HTTP status on the `groq.transcribe` client span (`http.response.status_code`):
+1. Loki: `{service_name="echonotes-api"} | severity_text="WARN"`. Provider failures log at `WARN` (`transcription failed` with `status_code`, `transcription timed out`), not at `ERROR`. Open a failing trace and check the upstream HTTP status on the `groq.transcribe` client span (`http.response.status_code`):
    - **401/403:** the `GROQ_API_KEY` is invalid or was revoked. Rotate it in the Render service env vars, which restarts the service. Never paste the key into an issue or a log.
    - **429:** rate limit or quota. Wait, or reduce traffic. It clears by itself.
    - **5xx or connection errors:** a Groq outage. Check the Groq status page and wait; there is nothing to roll back.
@@ -77,13 +80,19 @@ Most likely after a deploy. The fake provider can produce it too, because it is 
 | Bug that rollback cannot fix (old data, input-dependent) | Fix forward: issue → branch → PR with a regression test → CI → QA → merge → `deploy-prod.yml`. The on-call agent may have opened a fix PR already ([on-call.md](../on-call.md)); review it like any PR |
 | Invalid Groq key | Rotate `GROQ_API_KEY` in the Render env vars (dashboard → service → Environment) |
 | Groq outage, rate limit or slowness | Wait and watch; tell users that transcription is degraded. Do **not** switch prod to `TRANSCRIBER_PROVIDER=fake`: it would return fake transcripts |
-| Local demo stack | Rebuild the app from the fixed commit: `docker compose up --build -d --wait app` (same `COMPOSE_PROJECT_NAME`) |
+| Local demo stack | Rebuild only the app from the fixed commit **with telemetry kept on**: `make obs-rebuild-app`, which runs `OBS_OTLP_ENDPOINT=http://lgtm:4318 docker compose --profile observability up --build -d --wait app`. Use the same `COMPOSE_PROJECT_NAME`, `APP_PORT`, `GRAFANA_PORT` and `APP_IMAGE`. ⚠️ A plain `docker compose up --build app` recreates the app with an empty `OTEL_EXPORTER_OTLP_ENDPOINT`. The app then exports nothing, the rule gets no data, `noDataState: OK` turns it Normal, and that **looks like a recovery but proves nothing** |
 
 ## 4. Verify recovery
 
-1. New transcriptions succeed: `scripts/smoke.sh <url>` (on prod it creates and deletes a `smoke-test-*` project).
-2. *Transcription failure ratio* drops below 20 %. The alert goes back to **Normal** about 2 to 4 min after the last failure, once the 2 min window empties, and the contact point receives a `resolved` notification.
-3. `/api/health` shows the expected `commit`.
+"Normal" alone is not proof. The rule is also Normal when no data arrives (fewer than 5 requests, or an app that stopped exporting). Check that **fresh, successful samples arrive from the fixed app**:
+
+1. `/api/health` shows the expected `commit`.
+2. Drive traffic: run `scripts/smoke.sh <url>` **10 times** within 2 min (one transcription each). On prod it creates and deletes a `smoke-test-*` project. A freshly rebuilt app starts new counter series, and what it counts before its first export is not seen by `increase()`. Measured: 6 runs right after a rebuild counted as about 4.5, below the minimum of 5. 10 runs counted as about 8.4.
+3. Local stack: the new app is exporting. Both queries must return a **non-empty** result:
+   - `target_info{job="echonotes-api", vcs_ref_head_revision="<expected full sha>"}`: the fixed commit reports.
+   - `sum(increase(echonotes_transcriptions_total{status="success"}[2m])) > 0`: new successful transcriptions arrive.
+4. With **at least 5** transcriptions in the window (`sum(increase(echonotes_transcriptions_total[2m])) >= 5`, non-empty), the failure ratio query from section 1 is below `0.2`.
+5. The alert goes back to **Normal**, and the contact point receives a `resolved` notification. It can resolve before the ratio is below 20 % if traffic drops under 5 requests (see [design limits](../observability.md#alert-design-limits)), so steps 3 and 4 are the real check.
 
 ## 5. Escalate
 

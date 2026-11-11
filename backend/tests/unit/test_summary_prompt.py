@@ -1,6 +1,7 @@
 """US-22 AC13-AC15: the pure prompt builder (caps, truncation, image selection, downscaling)."""
 
 import io
+import os
 import uuid
 from datetime import UTC, datetime
 
@@ -158,11 +159,65 @@ def test_undecodable_images_are_skipped(data: bytes) -> None:
     assert downscale_image(data, 500) is None
 
 
-@pytest.mark.filterwarnings("ignore::PIL.Image.DecompressionBombWarning")
-def test_decompression_bombs_are_rejected_before_decoding() -> None:
-    assert Image.MAX_IMAGE_PIXELS == MAX_IMAGE_PIXELS
-    side = int(MAX_IMAGE_PIXELS**0.5) + 100
+def _blank_png(width: int, height: int, mode: str = "1") -> bytes:
     output = io.BytesIO()
-    Image.new("1", (side, side)).save(output, format="PNG")  # tiny file, huge canvas
+    Image.new(mode, (width, height)).save(output, format="PNG")  # tiny file, huge canvas
+    return output.getvalue()
 
-    assert downscale_image(output.getvalue(), 500) is None
+
+def test_pixel_cap_is_pinned_at_16_megapixels() -> None:
+    assert MAX_IMAGE_PIXELS == 16_000_000
+    assert Image.MAX_IMAGE_PIXELS == MAX_IMAGE_PIXELS
+
+
+@pytest.mark.filterwarnings("ignore::PIL.Image.DecompressionBombWarning")
+@pytest.mark.parametrize(("width", "height"), [(4001, 4000), (6300, 6300), (20000, 20000)])
+def test_images_over_the_pixel_cap_are_skipped_without_decoding(width: int, height: int) -> None:
+    assert downscale_image(_blank_png(width, height), 500) is None
+
+
+def test_an_image_exactly_at_the_pixel_cap_is_downscaled() -> None:
+    mime, data = downscale_image(_blank_png(4000, 4000, "L"), 500) or ("", b"")
+
+    assert mime in ("image/png", "image/jpeg")
+    with Image.open(io.BytesIO(data)) as image:
+        assert image.size == (500, 500)
+
+
+def test_large_jpegs_are_draft_decoded_to_the_target_size() -> None:
+    mime, data = downscale_image(real_jpeg(3000, 2000), 600) or ("", b"")
+
+    assert mime == "image/jpeg"
+    with Image.open(io.BytesIO(data)) as image:
+        assert image.size == (600, 400)
+
+
+def _noise_png(width: int, height: int, mode: str = "RGB") -> bytes:
+    output = io.BytesIO()
+    channels = len(mode)
+    Image.frombytes(mode, (width, height), os.urandom(width * height * channels)).save(
+        output, format="PNG"
+    )
+    return output.getvalue()
+
+
+def test_photos_and_noisy_screenshots_are_reencoded_as_jpeg() -> None:
+    original = _noise_png(400, 300)
+
+    mime, data = downscale_image(original, 1280) or ("", b"")
+
+    assert mime == "image/jpeg" and len(data) < len(original)
+
+
+def test_transparent_png_is_flattened_onto_white_as_jpeg() -> None:
+    mime, data = downscale_image(_noise_png(200, 100, "RGBA"), 1280) or ("", b"")
+
+    assert mime == "image/jpeg"
+    with Image.open(io.BytesIO(data)) as image:
+        assert image.mode == "RGB"
+
+
+def test_png_is_kept_only_when_it_is_smaller_than_jpeg() -> None:
+    mime, _data = downscale_image(real_png(400, 300), 1280) or ("", b"")  # flat colour
+
+    assert mime == "image/png"

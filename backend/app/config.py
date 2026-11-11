@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     summary_max_chars: int = Field(default=60000, gt=0)  # total across all transcripts
     summary_max_images: int = Field(default=8, ge=0)
     summary_image_max_px: int = Field(default=1280, gt=0)  # longest side after downscaling
+    # Total encoded bytes of the images sent and embedded (keeps summary.html small).
+    summary_max_image_bytes: int = Field(default=4 * 1024 * 1024, gt=0)
     # Built SPA (frontend/dist) served by FastAPI. Unset/empty = API only (dev, tests).
     static_dir: Path | None = None
     # Deployed commit (US-17 AC3): set by Render at runtime, or by the Docker `GIT_SHA` build arg.

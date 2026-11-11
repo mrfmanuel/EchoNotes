@@ -76,6 +76,17 @@ def test_sanitizer_keeps_only_allowed_tags_and_the_data_screenshot_attribute() -
     assert "alert" not in cleaned.replace("Ignore previous instructions", "")
 
 
+@pytest.mark.parametrize("number", ["²", "①", "١", "１", "1 ", "-1", "0"])
+def test_non_ascii_or_invalid_screenshot_numbers_are_dropped_without_crashing(
+    number: str,
+) -> None:
+    fragment = f'<p>ok</p><figure data-screenshot="{number}"><figcaption>c</figcaption></figure>'
+
+    document = render_document(fragment, {1: IMAGE}, CTX)
+
+    assert "<p>ok</p>" in document and "<img" not in document and "<figcaption>c" not in document
+
+
 def test_valid_screenshot_figures_become_data_uri_images_with_a_plain_caption() -> None:
     fragment = (
         '<figure data-screenshot="1"><figcaption>The <em>whiteboard</em></figcaption></figure>'

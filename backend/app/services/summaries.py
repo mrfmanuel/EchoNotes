@@ -315,23 +315,34 @@ async def _prepare_images(
     transcripts: list[TranscriptInput],
     settings: Settings,
 ) -> tuple[list[PromptImage], bool]:
-    """Up to `SUMMARY_MAX_IMAGES` decodable screenshots, numbered in upload order.
+    """Up to `SUMMARY_MAX_IMAGES` decodable screenshots within `SUMMARY_MAX_IMAGE_BYTES`
+    (total encoded size), numbered in upload order.
 
-    Returns `(images, cut)`: `cut` is true when candidates were left out because of the cap.
+    Returns `(images, cut)`: `cut` is true only when a readable candidate was left out by the
+    count cap or the byte budget. Unreadable or oversized (pixels) images are just skipped.
     """
     transcript_n = {t.id: n for n, t in enumerate(oldest_first(transcripts), start=1)}
     candidates = select_screenshots(screenshots, set(transcript_n))
     chosen: list[tuple[ScreenshotInput, str, bytes]] = []
-    for index, shot in enumerate(candidates):
-        if len(chosen) >= settings.summary_max_images:
-            return _number(chosen, transcript_n), index < len(candidates)
+    total_bytes, cut = 0, False
+    for shot in candidates:
         data = await session.scalar(select(Screenshot.data).where(Screenshot.id == shot.id))
         prepared = await asyncio.to_thread(
             downscale_image, data or b"", settings.summary_image_max_px
         )
-        if prepared is not None:
-            chosen.append((shot, *prepared))
-    return _number(chosen, transcript_n), False
+        data = None  # drop the original bytes before the next image is loaded
+        if prepared is None:
+            continue
+        if len(chosen) >= settings.summary_max_images:
+            cut = True
+            break
+        mime, encoded = prepared
+        if total_bytes + len(encoded) > settings.summary_max_image_bytes:
+            cut = True
+            continue  # a smaller later image may still fit
+        chosen.append((shot, mime, encoded))
+        total_bytes += len(encoded)
+    return _number(chosen, transcript_n), cut
 
 
 def _number(
@@ -380,7 +391,13 @@ async def _store_failure(
 
 
 async def recover_interrupted(factory: SessionFactory) -> int:
-    """Startup (AC18): jobs left `pending`/`running` by a dead process become `interrupted`."""
+    """Startup (AC18): jobs left `pending`/`running` by a dead process become `interrupted`.
+
+    Rolling-deploy caveat: this assumes no other instance is still running jobs. During a
+    zero-downtime deploy the new instance would mark the old instance's in-flight jobs as
+    `interrupted` (the old one may then still overwrite them with its result). That is fine for
+    our single Render instance; #60 documents it in docs/deployment.md.
+    """
     async with factory() as session:
         result = await session.execute(
             update(Summary)

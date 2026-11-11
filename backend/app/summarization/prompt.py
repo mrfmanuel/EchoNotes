@@ -8,16 +8,21 @@ Rules (documented in docs/architecture.md and unit-tested):
   cap, it is shared with a *max-min fair* split. Short transcripts are kept whole, and the
   rest of the budget is split equally among the longer ones, which are cut at the end (any
   leftover characters go to the oldest of them). Every transcript keeps a section.
-- **Images** (`SUMMARY_MAX_IMAGES`): screenshots linked to a sent transcript come first
-  (oldest first), then unlinked ones (newest first). Candidates that cannot be decoded are
-  skipped. The chosen ones are numbered 1..k in upload order and downscaled so the longest
-  side is at most `SUMMARY_IMAGE_MAX_PX`, re-encoded as PNG (PNG input) or JPEG (others).
-- Anything cut (text or images) sets `truncated`, and the prompt tells the model to say so.
+- **Images** (`SUMMARY_MAX_IMAGES`, `SUMMARY_MAX_IMAGE_BYTES`): screenshots linked to a sent
+  transcript come first (oldest first), then unlinked ones (newest first). Candidates that
+  cannot be decoded or exceed `MAX_IMAGE_PIXELS` are skipped silently. Each is downscaled so
+  the longest side is at most `SUMMARY_IMAGE_MAX_PX` and re-encoded as JPEG (PNG only when
+  smaller); one that would push the total encoded bytes over the budget is left out. The
+  chosen ones are numbered 1..k in upload order; the same bytes go to the provider and into
+  the HTML.
+- Content cut by a cap (characters, image count, image byte budget) sets `truncated`, and the
+  prompt tells the model to say so. Skipped unreadable images do not.
 """
 
 import html
 import io
 import re
+import threading
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -32,10 +37,12 @@ ALLOWED_TAGS = (
     *("figure", "figcaption", "br", "hr", "table", "thead", "tbody", "tr", "th", "td", "code"),
 )
 TRUNCATION_MARK = " [... truncated]"
-# Decompression-bomb guard: uploads are at most 5 MB, real screenshots are far below this.
-MAX_IMAGE_PIXELS = 40_000_000
+# Decompression-bomb / memory guard for a 512 MB instance: a 5K screenshot is 14.7 MP, and a
+# 16 MP RGBA image decodes to about 64 MB. Larger images are skipped (never decoded).
+MAX_IMAGE_PIXELS = 16_000_000
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
-JPEG_QUALITY = 85
+JPEG_QUALITY = 80
+_DECODE_LOCK = threading.Lock()  # one decode at a time across all summary jobs
 _TRANSCRIPT_TAG = re.compile(r"<(/?)(transcript)", re.IGNORECASE)
 
 SYSTEM_INSTRUCTION = f"""\
@@ -151,28 +158,52 @@ def select_screenshots(
 
 
 def downscale_image(data: bytes, max_px: int) -> tuple[str, bytes] | None:
-    """`(mime type, bytes)` with the longest side <= `max_px`; `None` if it can't be decoded."""
-    try:
-        with Image.open(io.BytesIO(data)) as source:
-            if source.width * source.height > MAX_IMAGE_PIXELS:
-                return None
-            is_png = source.format == "PNG"
-            source.load()
-            image = source.copy()
-    except (OSError, ValueError, SyntaxError, Image.DecompressionBombError):
-        return None
-    image.thumbnail((max_px, max_px))
-    output = io.BytesIO()
-    if is_png:
-        image.save(output, format="PNG", optimize=True)
-        return "image/png", output.getvalue()
-    if image.mode != "RGB":
-        background = Image.new("RGB", image.size, "white")
-        rgba = image.convert("RGBA")
-        background.paste(rgba, mask=rgba.getchannel("A"))
-        image = background
-    image.save(output, format="JPEG", quality=JPEG_QUALITY)
-    return "image/jpeg", output.getvalue()
+    """`(mime type, bytes)` with the longest side <= `max_px`; `None` if it can't be decoded
+    or has more than `MAX_IMAGE_PIXELS` pixels (checked from the header, before decoding).
+
+    Memory: one image is decoded at a time process-wide (`_DECODE_LOCK`, this runs in a worker
+    thread), JPEGs are decoded at a reduced scale (`draft`), and the decoded image is resized in
+    place and closed when done (no copies).
+    """
+    with _DECODE_LOCK:
+        try:
+            with Image.open(io.BytesIO(data)) as image:
+                if image.width * image.height > MAX_IMAGE_PIXELS:
+                    return None
+                if image.format == "JPEG":
+                    image.draft("RGB", (max_px, max_px))
+                image.thumbnail((max_px, max_px))
+                return _encode(image)
+        except (OSError, ValueError, SyntaxError, Image.DecompressionBombError):
+            return None
+
+
+def _encode(image: Image.Image) -> tuple[str, bytes]:
+    """JPEG (quality `JPEG_QUALITY`, transparency flattened onto white); PNG only if smaller."""
+    png: bytes | None = None
+    if image.format == "PNG":
+        png_output = io.BytesIO()
+        image.save(png_output, format="PNG", optimize=True)
+        png = png_output.getvalue()
+    flat = _on_white(image)
+    jpeg_output = io.BytesIO()
+    flat.save(jpeg_output, format="JPEG", quality=JPEG_QUALITY)
+    if flat is not image:
+        flat.close()
+    jpeg = jpeg_output.getvalue()
+    if png is not None and len(png) < len(jpeg):
+        return "image/png", png
+    return "image/jpeg", jpeg
+
+
+def _on_white(image: Image.Image) -> Image.Image:
+    if image.mode in ("RGB", "L"):
+        return image
+    rgba = image.convert("RGBA")
+    background = Image.new("RGB", rgba.size, "white")
+    background.paste(rgba, mask=rgba.getchannel("A"))
+    rgba.close()
+    return background
 
 
 def _transcript_block(n: int, transcript: TranscriptInput) -> str:

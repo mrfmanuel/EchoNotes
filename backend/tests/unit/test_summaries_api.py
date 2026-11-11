@@ -1,6 +1,9 @@
 """US-22 API and job lifecycle on SQLite (AC1-AC5, AC12, AC15, AC18, AC19), fake/stub providers."""
 
 import asyncio
+import base64
+import io
+import os
 import re
 import uuid
 from typing import Any
@@ -8,6 +11,7 @@ from typing import Any
 import httpx2
 import pytest
 from fastapi import FastAPI
+from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -356,6 +360,89 @@ async def test_undecodable_screenshots_are_skipped(
     summary = await generate(app, client, project_id)
 
     assert summary["status"] == "succeeded" and summary["image_count"] == 0
+    assert summary["truncated"] is False  # skipping an unreadable image is not truncation
+
+
+@pytest.mark.filterwarnings("ignore::PIL.Image.DecompressionBombWarning")
+async def test_an_image_over_the_pixel_cap_is_skipped_and_the_job_succeeds(
+    app: FastAPI, client: httpx2.AsyncClient
+) -> None:
+    project_id = await project_with_transcript(client)
+    output = io.BytesIO()
+    Image.new("1", (6300, 6300)).save(output, format="PNG")  # small file, 39.7 MP canvas
+    await add_screenshot(client, project_id, output.getvalue())
+    await add_screenshot(client, project_id, real_png())
+
+    summary = await generate(app, client, project_id)
+
+    assert summary["status"] == "succeeded"
+    assert summary["image_count"] == 1 and summary["truncated"] is False
+
+
+@pytest.mark.parametrize("number", ["²", "①"])
+async def test_a_unicode_digit_screenshot_number_is_dropped_and_the_job_succeeds(
+    app: FastAPI, client: httpx2.AsyncClient, number: str
+) -> None:
+    fragment = f'<h1>T</h1><figure data-screenshot="{number}"><figcaption>x</figcaption></figure>'
+    use(app, StubSummarizer(fragment=fragment))
+    project_id = await project_with_transcript(client)
+    await add_screenshot(client, project_id, real_png())
+
+    summary = await generate(app, client, project_id)
+
+    assert summary["status"] == "succeeded" and "<img" not in summary["html"]
+
+
+def _noise_png(width: int, height: int) -> bytes:
+    output = io.BytesIO()
+    Image.frombytes("RGB", (width, height), os.urandom(width * height * 3)).save(
+        output, format="PNG"
+    )
+    return output.getvalue()
+
+
+async def test_embedded_images_stay_within_the_byte_budget_and_mark_truncated(
+    app: FastAPI, client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    budget = 150_000
+    monkeypatch.setenv("SUMMARY_MAX_IMAGE_BYTES", str(budget))
+    get_settings.cache_clear()
+    stub = StubSummarizer(
+        fragment="".join(
+            f'<figure data-screenshot="{n}"><figcaption>s{n}</figcaption></figure>'
+            for n in range(1, 9)
+        )
+    )
+    use(app, stub)
+    project_id = await project_with_transcript(client)
+    for _ in range(4):  # each about 60-90 KB as JPEG: only one or two fit
+        await add_screenshot(client, project_id, _noise_png(400, 300))
+
+    summary = await generate(app, client, project_id)
+
+    sent = stub.requests[0].images
+    assert 1 <= len(sent) < 4 and summary["image_count"] == len(sent)
+    assert sum(len(image.data) for image in sent) <= budget
+    assert summary["truncated"] is True and TRUNCATION_NOTE in summary["html"]
+    for image in sent:  # the same bytes went to the provider and into the HTML
+        assert base64.b64encode(image.data).decode() in summary["html"]
+
+
+async def test_eight_default_screenshots_stay_under_the_default_budget(
+    app: FastAPI, client: httpx2.AsyncClient
+) -> None:
+    stub = StubSummarizer()
+    use(app, stub)
+    project_id = await project_with_transcript(client)
+    for _ in range(8):
+        await add_screenshot(client, project_id, _noise_png(1600, 1000))
+
+    summary = await generate(app, client, project_id)
+
+    sent = stub.requests[0].images
+    assert sum(len(image.data) for image in sent) <= get_settings().summary_max_image_bytes
+    assert all(image.mime_type == "image/jpeg" for image in sent)
+    assert summary["image_count"] == len(sent)
 
 
 # --- AC18 + lifecycle -------------------------------------------------------------------------

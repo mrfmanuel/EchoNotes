@@ -113,7 +113,9 @@ def embed_screenshots(sanitized: str, images: Mapping[int, SummaryImage]) -> str
 
     def replace(match: re.Match[str]) -> str:
         number = match.group(1)
-        image = images.get(int(number)) if number.isdigit() else None
+        # ASCII digits only: `"²".isdigit()` is True but `int("²")` raises.
+        valid = number.isascii() and number.isdigit()
+        image = images.get(int(number)) if valid else None
         if image is None:
             return ""
         caption_match = _CAPTION.search(match.group(2))

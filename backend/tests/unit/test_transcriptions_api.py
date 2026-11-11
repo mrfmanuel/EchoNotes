@@ -82,6 +82,18 @@ async def test_upload_returns_201_transcript_from_fake_provider(
     assert datetime.fromisoformat(body["created_at"]).utcoffset() is not None
 
 
+async def test_upload_of_audio_with_zero_duration_returns_201(
+    client: httpx2.AsyncClient,
+) -> None:
+    # A 44-byte file (an empty WAV header) makes the fake provider report 0.0 s.
+    project = await _project(client)
+
+    response = await upload(client, project["id"], "empty.wav", b"R" * 44, "audio/wav")
+
+    assert response.status_code == 201, response.text
+    assert response.json()["duration_seconds"] == 0.0
+
+
 async def test_created_transcript_is_persisted_and_listed_in_project_detail(
     client: httpx2.AsyncClient, session: AsyncSession
 ) -> None:

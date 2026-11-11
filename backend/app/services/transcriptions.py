@@ -88,7 +88,7 @@ async def _transcribe(
             "provider_error",
         ) from None
     elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
-    if result.duration_seconds is not None:
+    if result.duration_seconds:  # None or 0.0 (e.g. very short clips): no factor to log
         # Real-time factor: seconds of processing per second of audio (lower is faster).
         log_fields["realtime_factor"] = round(elapsed_ms / 1000 / result.duration_seconds, 4)
     logger.info("transcription finished", extra={**log_fields, "transcribe_ms": elapsed_ms})

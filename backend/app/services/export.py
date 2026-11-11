@@ -5,6 +5,7 @@ Layout (everything under `<project-slug>/`):
     README.md                          index with relative links
     transcripts/<slug>.md|.txt         same bytes as the #13 downloads
     screenshots/<nn>-<name>.<ext>      nn = 1-based, oldest first
+    summary.html                       only when the project has a succeeded AI summary (US-22)
 """
 
 import logging
@@ -25,6 +26,7 @@ from app.errors import NotFoundError
 from app.services.images import IMAGE_EXTENSIONS
 from app.services.projects import PROJECT_NOT_FOUND
 from app.services.slugs import next_free_slug, slugify
+from app.services.summaries import latest_succeeded_html, summary_html_bytes
 from app.services.transcript_format import format_duration, render_markdown, render_text
 from app.telemetry import track_export
 
@@ -34,6 +36,7 @@ SCREENSHOT_FALLBACK = "screenshot"
 SPOOL_MAX_MEMORY_BYTES = 16 * 1024 * 1024
 STREAM_CHUNK_BYTES = 64 * 1024
 EMPTY_PROJECT_NOTE = "This project is empty: it has no transcripts and no screenshots."
+SUMMARY_PATH = "summary.html"
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,7 @@ class ExportPlan:
     readme: str = ""
     transcripts: list[TranscriptFiles] = field(default_factory=list)
     screenshots: list[ScreenshotFile] = field(default_factory=list)
+    summary_html: str | None = None  # written as `summary.html` when set
 
 
 def _oldest_first[T: (Transcript, Screenshot)](items: Sequence[T]) -> list[T]:
@@ -132,10 +136,13 @@ def render_readme(
     exported_at: datetime,
     transcripts: list[TranscriptFiles],
     screenshots: list[ScreenshotFile],
+    has_summary: bool = False,
 ) -> str:
     heading = " ".join(project_name.split())
     date = exported_at.astimezone(UTC).date().isoformat()
     lines = [f"# {heading}", "", f"Exported: {date} (UTC)", ""]
+    if has_summary:
+        lines += ["## AI summary", "", f"[{SUMMARY_PATH}]({SUMMARY_PATH})", ""]
     if not transcripts and not screenshots:
         return "\n".join([*lines, EMPTY_PROJECT_NOTE, ""])
     lines += ["## Transcripts", "", *_transcript_table(transcripts), ""]
@@ -148,12 +155,19 @@ def build_plan(
     transcripts: Sequence[Transcript],
     screenshots: Sequence[Screenshot],
     exported_at: datetime,
+    summary_html: str | None = None,
 ) -> ExportPlan:
     """Pure: decide every file name and the README for a project export."""
-    plan = ExportPlan(root=project.slug)
+    plan = ExportPlan(root=project.slug, summary_html=summary_html)
     plan.transcripts = plan_transcripts(transcripts)
     plan.screenshots = plan_screenshots(screenshots)
-    plan.readme = render_readme(project.name, exported_at, plan.transcripts, plan.screenshots)
+    plan.readme = render_readme(
+        project.name,
+        exported_at,
+        plan.transcripts,
+        plan.screenshots,
+        has_summary=summary_html is not None,
+    )
     return plan
 
 
@@ -185,6 +199,8 @@ async def write_zip(
         for shot in plan.screenshots:
             # Images are already compressed; storing them is faster and as small.
             add(shot.path, await _load_image(session, shot.screenshot.id), compress=False)
+        if plan.summary_html is not None:  # same bytes as the summary download (US-22 AC12)
+            add(SUMMARY_PATH, summary_html_bytes(plan.summary_html))
 
 
 async def _load_contents(
@@ -227,8 +243,9 @@ async def export_project(session: AsyncSession, project_id: uuid.UUID) -> Export
     Traced as `export.build` and counted in `echonotes.exports{status}` (#29)."""
     with track_export(project_id) as span:
         project, transcripts, screenshots = await _load_contents(session, project_id)
+        summary_html = await latest_succeeded_html(session, project_id)
         exported_at = datetime.now(UTC)
-        plan = build_plan(project, transcripts, screenshots, exported_at)
+        plan = build_plan(project, transcripts, screenshots, exported_at, summary_html)
         spool: IO[bytes] = SpooledTemporaryFile(max_size=SPOOL_MAX_MEMORY_BYTES)  # noqa: SIM115
         try:
             await write_zip(session, plan, exported_at, spool)

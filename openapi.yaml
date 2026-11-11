@@ -23,6 +23,8 @@ tags:
   - name: transcriptions
   - name: screenshots
   - name: exports
+  - name: summaries
+    description: AI-generated HTML project summary (US-22, M5)
 
 paths:
   /api/health:
@@ -361,6 +363,81 @@ paths:
                 contentMediaType: application/zip
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/projects/{projectId}/summaries:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    post:
+      tags: [summaries]
+      operationId: createSummary
+      summary: Start an AI summary of the whole project in the background (US-22 AC1, AC4)
+      description: >-
+        No request body. Creates a `pending` summary and starts the job. If the project already
+        has a `pending` or `running` summary, that one is returned and no second job starts.
+        Sends the project's transcripts and screenshots to the configured provider
+        (`SUMMARIZER_PROVIDER`: gemini | groq | fake).
+      responses:
+        "202":
+          description: The new (or already active) summary job
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Summary" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The project has no transcripts (`code` = `no_transcripts`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/projects/{projectId}/summaries/latest:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [summaries]
+      operationId: getLatestSummary
+      summary: The most recently created summary of the project (US-22 AC2)
+      description: >-
+        Poll this while `status` is `pending` or `running`. `html` is set only when `succeeded`.
+        404 with `code` = `summary_not_found` when the project never had a summary
+        (`not_found` when the project does not exist).
+      responses:
+        "200":
+          description: Summary
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Summary" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/projects/{projectId}/summaries/{summaryId}/download:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/SummaryId"
+    get:
+      tags: [summaries]
+      operationId: downloadSummary
+      summary: Download a succeeded summary as a self-contained summary.html (US-22 AC3)
+      responses:
+        "200":
+          description: >-
+            Self-contained HTML document (screenshots as data: URIs, strict CSP, nothing loaded
+            from external hosts). Same bytes as `<project-slug>/summary.html` in the ZIP export.
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+              description: attachment; filename="summary.html"
+          content:
+            text/html:
+              schema: { type: string }
+        "404":
+          description: Unknown summary or one of another project (`code` = `summary_not_found`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: The summary has not succeeded (`code` = `summary_not_ready`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
 components:
   parameters:
     ProjectId:
@@ -375,6 +452,11 @@ components:
       schema: { type: string, format: uuid }
     ScreenshotId:
       name: screenshotId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SummaryId:
+      name: summaryId
       in: path
       required: true
       schema: { type: string, format: uuid }
@@ -432,7 +514,7 @@ components:
               items: { type: object }
         code:
           type: string
-          enum: [not_found, validation_error, unsupported_media_type, audio_too_large, image_too_large, provider_error, provider_timeout]
+          enum: [not_found, validation_error, unsupported_media_type, audio_too_large, image_too_large, provider_error, provider_timeout, no_transcripts, summary_not_found, summary_not_ready]
           description: Machine-readable error code (see docs/product-spec.md#341-conventions-decided-while-grooming-m2-2026-11-10)
 
     LanguageHint:
@@ -517,3 +599,33 @@ components:
         size_bytes: { type: integer, minimum: 1, maximum: 5242880 }
         image_url: { type: string, examples: ["/api/screenshots/0f8c.../image"] }
         created_at: { type: string, format: date-time }
+
+    Summary:
+      type: object
+      description: >-
+        AI project summary job (US-22). Statuses: pending -> running -> succeeded | failed.
+        `error_code` is a safe code only (never provider text).
+      required: [id, project_id, status, provider, model, created_at, started_at, finished_at, error_code, truncated, transcript_count, image_count, html]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        status: { type: string, enum: [pending, running, succeeded, failed] }
+        provider: { type: string, enum: [gemini, groq, fake] }
+        model:
+          type: [string, "null"]
+          description: The model that actually produced the summary (the fallback model when used)
+          examples: ["gemini-3.8-flash"]
+        created_at: { type: string, format: date-time }
+        started_at: { type: [string, "null"], format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+        error_code:
+          type: [string, "null"]
+          enum: [provider_error, provider_timeout, interrupted, internal_error, null]
+        truncated:
+          type: boolean
+          description: Content was cut to fit SUMMARY_MAX_CHARS / SUMMARY_MAX_IMAGES (the summary says so)
+        transcript_count: { type: integer, minimum: 0, description: Transcripts sent to the provider }
+        image_count: { type: integer, minimum: 0, description: Screenshots sent / embedded }
+        html:
+          type: [string, "null"]
+          description: The full self-contained, sanitized HTML document; only when status is succeeded

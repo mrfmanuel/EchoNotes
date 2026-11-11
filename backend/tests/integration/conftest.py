@@ -16,11 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from alembic import command
 from app.config import get_settings, normalize_database_url
-from app.db.session import create_engine, create_sessionmaker, get_session
+from app.db.session import create_engine, create_sessionmaker, get_session, get_session_factory
 from app.main import create_app
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
-TABLES = ("screenshot", "transcript", "project")
+TABLES = ("summaries", "screenshot", "transcript", "project")
 
 
 def alembic_config() -> Config:
@@ -85,6 +85,7 @@ def pg_app(pg_session_maker: async_sessionmaker[AsyncSession]) -> FastAPI:
             yield session
 
     app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_session_factory] = lambda: pg_session_maker  # summary jobs
     return app
 
 

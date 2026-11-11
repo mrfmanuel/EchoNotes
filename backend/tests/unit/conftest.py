@@ -10,7 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from app.config import get_settings
 from app.db import models  # noqa: F401  (registers tables)
 from app.db.base import Base
-from app.db.session import create_engine, create_sessionmaker, get_session
+from app.db.session import (
+    create_engine,
+    create_sessionmaker,
+    get_session,
+    get_session_factory,
+)
 from app.main import create_app
 from app.telemetry import setup_telemetry
 from tests.telemetry_utils import Capture
@@ -49,6 +54,7 @@ def app(session_maker: async_sessionmaker[AsyncSession]) -> FastAPI:
             yield session
 
     app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_session_factory] = lambda: session_maker  # summary jobs
     return app
 
 

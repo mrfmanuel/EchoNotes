@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end smoke test of the EchoNotes key journey (#24):
-#   health -> SPA -> create project -> upload audio -> transcript -> screenshot -> export ZIP -> delete
+#   health -> SPA -> create project -> upload audio -> transcript -> screenshot
+#   -> [AI summary, only with SMOKE_SUMMARY=1] -> export ZIP -> delete
 #
 # Usage: scripts/smoke.sh <base-url>          e.g. scripts/smoke.sh http://localhost:8000
 #
@@ -17,6 +18,19 @@
 #   SMOKE_SKIP_SPA=1            skip the SPA checks (API-only server, e.g. uvicorn without STATIC_DIR)
 #   SMOKE_KEEP=1                keep the smoke project (skip the cleanup delete) for debugging
 #   SMOKE_EXPECT_COMMIT=<sha>   fail unless /api/health reports this full commit SHA (deploys)
+#   SMOKE_SUMMARY=1             also run the AI summary step (US-22): POST a summary, poll
+#                               `latest` until it is terminal, check the HTML, download it and
+#                               require summary.html in the ZIP. Default off (CI, prod deploys).
+#   SMOKE_SUMMARY_TIMEOUT=120   seconds to wait for the summary job to finish
+#   SMOKE_SUMMARY_ALLOW_PROVIDER_ERROR=1
+#                               a job that ends `failed` with error_code provider_error or
+#                               provider_timeout is a WARN, not a failure (free-tier quota or a
+#                               slow LLM is not a deploy defect). HTTP errors, a stuck job,
+#                               internal_error/interrupted and bad HTML always fail. Set by
+#                               deploy-dev only.
+#   SMOKE_SUMMARY_EXPECT_PROVIDER=<name>
+#                               fail unless the summary's `provider` is exactly this (deploy-dev
+#                               sets `gemini`, so a missing key that falls back to fake fails)
 #
 # The smoke project is named `smoke-test-<UTC timestamp>-<pid>`. An EXIT trap deletes it even
 # when a step fails or the run is interrupted, so dev/prod keep no smoke data.
@@ -34,6 +48,7 @@ fi
 BASE_URL="${1%/}"
 HEALTH_TIMEOUT="${SMOKE_HEALTH_TIMEOUT:-90}"
 REQUEST_TIMEOUT="${SMOKE_REQUEST_TIMEOUT:-120}"
+SUMMARY_TIMEOUT="${SMOKE_SUMMARY_TIMEOUT:-120}"
 
 # ---------------------------------------------------------------------------------------------
 # Output helpers
@@ -249,16 +264,119 @@ size_bytes="$(json_get "$WORK/screenshot.json" size_bytes)"
 pass "upload screenshot" "HTTP 201 id=$SCREENSHOT_ID size_bytes=$size_bytes linked=yes ${TIME}s"
 
 # ---------------------------------------------------------------------------------------------
+# 7b. Optional (SMOKE_SUMMARY=1): AI summary -> poll latest -> check HTML -> download (US-22).
+#     Uses the server's configured summarizer (fake locally/CI, Gemini on dev). Prints only
+#     status, provider, model, error_code, IDs, sizes and timings, never the summary content.
+# ---------------------------------------------------------------------------------------------
+SUMMARY_IN_ZIP=0
+if [ "${SMOKE_SUMMARY:-}" = "1" ]; then
+  request "$WORK/summary.json" -X POST "$BASE_URL/api/projects/$PROJECT_ID/summaries"
+  [ "$CODE" = "202" ] || fail "start summary" "HTTP $CODE (want 202)"
+  SUMMARY_ID="$(json_get "$WORK/summary.json" id 2>/dev/null)" ||
+    fail "start summary" "HTTP 202 but the body is not JSON"
+  [ -n "$SUMMARY_ID" ] || fail "start summary" "HTTP 202 but no summary id"
+  start_provider="$(json_get "$WORK/summary.json" provider)"
+  start_provider="${start_provider//$'\r'/}"
+  if [ -n "${SMOKE_SUMMARY_EXPECT_PROVIDER:-}" ] && [ "$start_provider" != "$SMOKE_SUMMARY_EXPECT_PROVIDER" ]; then
+    fail "start summary" "provider=$start_provider, want $SMOKE_SUMMARY_EXPECT_PROVIDER (SMOKE_SUMMARY_EXPECT_PROVIDER; is the provider key set on the server?)"
+  fi
+  pass "start summary" "HTTP 202 id=$SUMMARY_ID provider=$start_provider ${TIME}s"
+
+  summary_start=$(date +%s)
+  summary_deadline=$((summary_start + SUMMARY_TIMEOUT))
+  polls=0
+  while :; do
+    polls=$((polls + 1))
+    request "$WORK/latest.json" "$BASE_URL/api/projects/$PROJECT_ID/summaries/latest"
+    [ "$CODE" = "200" ] || fail "summary latest" "HTTP $CODE (want 200)"
+    # One line: "<status> <id> <provider> <model> <error_code> <verdict>"; verdict checks the
+    # HTML of a succeeded summary without printing any of it.
+    summary_state="$("$PY" - "$WORK/latest.json" <<'PY'
+import json, re, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        data = json.load(fh)
+except (ValueError, UnicodeDecodeError):
+    data = None
+if not isinstance(data, dict):
+    print("not-json")
+    sys.exit(0)
+status = data.get("status") or "?"
+verdict = "-"
+if status == "succeeded":
+    html = data.get("html") or ""
+    if not html.lstrip().lower().startswith("<!doctype html"):
+        verdict = "no-doctype"
+    elif re.search(r"<script", html, re.IGNORECASE):
+        verdict = "has-script"
+    else:
+        verdict = f"ok:{len(html.encode('utf-8'))}"
+fields = [status, data.get("id"), data.get("provider"), data.get("model"), data.get("error_code")]
+print(" ".join(str(v or "-") for v in fields), verdict)
+PY
+)"
+    summary_state="${summary_state//$'\r'/}" # python.exe on Windows may print CRLF
+    [ "$summary_state" != "not-json" ] || fail "summary latest" "HTTP 200 but the body is not a JSON object"
+    read -r s_status s_id s_provider s_model s_error s_verdict <<<"$summary_state"
+    [ "$s_id" = "$SUMMARY_ID" ] || fail "summary latest" "latest is $s_id, want $SUMMARY_ID"
+    case "$s_status" in
+      pending | running) ;;
+      succeeded | failed) break ;;
+      *) fail "summary latest" "unexpected status '$s_status'" ;;
+    esac
+    if [ "$(date +%s)" -ge "$summary_deadline" ]; then
+      fail "summary latest" "still $s_status after ${SUMMARY_TIMEOUT}s ($polls polls)"
+    fi
+    sleep 3
+  done
+  summary_secs=$(($(date +%s) - summary_start))
+
+  if [ "$s_status" = "failed" ]; then
+    case "$s_error" in
+      provider_error | provider_timeout)
+        if [ "${SMOKE_SUMMARY_ALLOW_PROVIDER_ERROR:-}" = "1" ]; then
+          info "WARN summary failed with error_code=$s_error (provider=$s_provider model=$s_model) after ${summary_secs}s; tolerated (SMOKE_SUMMARY_ALLOW_PROVIDER_ERROR=1: provider quota/outage, not a deploy defect)"
+        else
+          fail "summary latest" "status=failed error_code=$s_error provider=$s_provider (the AI provider failed or is rate limited)"
+        fi
+        ;;
+      *)
+        fail "summary latest" "status=failed error_code=$s_error provider=$s_provider (an application error, see the summary.generate span and logs)"
+        ;;
+    esac
+  else
+    case "$s_verdict" in
+      ok:*) ;;
+      no-doctype) fail "summary latest" "succeeded but html does not start with <!doctype html" ;;
+      has-script) fail "summary latest" "succeeded but html contains <script" ;;
+      *) fail "summary latest" "succeeded but html check failed ($s_verdict)" ;;
+    esac
+    pass "summary latest" "succeeded provider=$s_provider model=$s_model html_bytes=${s_verdict#ok:} polls=$polls ${summary_secs}s"
+
+    request "$WORK/summary.html" -D "$WORK/summary.headers" \
+      "$BASE_URL/api/projects/$PROJECT_ID/summaries/$SUMMARY_ID/download"
+    [ "$CODE" = "200" ] || fail "summary download" "HTTP $CODE (want 200)"
+    grep -qi '^content-type: *text/html' "$WORK/summary.headers" ||
+      fail "summary download" "HTTP 200 but Content-Type is not text/html"
+    grep -qi '^content-disposition: *attachment;.*summary\.html' "$WORK/summary.headers" ||
+      fail "summary download" "HTTP 200 but no attachment filename=summary.html"
+    html_bytes="$(wc -c <"$WORK/summary.html" | tr -d ' ')"
+    pass "summary download" "HTTP 200 text/html attachment bytes=$html_bytes ${TIME}s"
+    SUMMARY_IN_ZIP=1
+  fi
+fi
+
+# ---------------------------------------------------------------------------------------------
 # 8. Export the project as a ZIP and validate its tree
 # ---------------------------------------------------------------------------------------------
 request "$WORK/export.zip" -D "$WORK/export.headers" "$BASE_URL/api/projects/$PROJECT_ID/export"
 [ "$CODE" = "200" ] || fail "export zip" "HTTP $CODE (want 200)"
 grep -qi '^content-type: *application/zip' "$WORK/export.headers" ||
   fail "export zip" "HTTP 200 but Content-Type is not application/zip"
-zip_report="$("$PY" - "$WORK/export.zip" "$PROJECT_SLUG" <<'PY'
+zip_report="$("$PY" - "$WORK/export.zip" "$PROJECT_SLUG" "$SUMMARY_IN_ZIP" <<'PY'
 import fnmatch, sys, zipfile
 
-path, slug = sys.argv[1], sys.argv[2]
+path, slug, want_summary = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
 try:
     archive = zipfile.ZipFile(path)
 except zipfile.BadZipFile:
@@ -276,6 +394,8 @@ required = {
     "transcripts/*.txt": f"{slug}/transcripts/*.txt",
     "screenshots/01-*.png": f"{slug}/screenshots/01-*.png",
 }
+if want_summary:  # SMOKE_SUMMARY=1 and the summary succeeded (US-22)
+    required["summary.html"] = f"{slug}/summary.html"
 missing = [label for label, pattern in required.items() if not fnmatch.filter(names, pattern)]
 if missing:
     print("missing " + ", ".join(missing))

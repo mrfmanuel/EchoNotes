@@ -165,6 +165,12 @@ def test_rule_uid_comes_from_the_label_or_the_generator_url() -> None:
     assert r.alert_rule_uid(alert) == "other"
 
 
+def test_rule_uid_prefers_grafanas_rule_uid_field() -> None:
+    alert = {**grafana_payload()["alerts"][0], "ruleUID": "from-field", "generatorURL": ""}
+    assert r.alert_rule_uid(alert) == "from-field"
+    assert r.dedupe_key(alert) == "from-field:abc123"
+
+
 def test_incident_id_has_the_utc_timestamp_format() -> None:
     assert r.INCIDENT_ID_RE.match(r.new_incident_id())
 

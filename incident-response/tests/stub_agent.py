@@ -22,6 +22,30 @@ TEST = """from app.calc import ratio
 def test_ratio_of_zero_denominator_is_zero() -> None:
     assert ratio(1.0, 0.0) == 0.0
 """
+CHAOS_APP = "backend/app/services/transcriptions.py"
+CHAOS_BUG = "    if result.duration_seconds is not None:\n"
+CHAOS_FIX = "    if result.duration_seconds:  # None or 0.0 (header-only clips): no factor\n"
+CHAOS_TEST = "backend/tests/unit/test_transcription_zero_duration.py"
+CHAOS_TEST_BODY = '''"""Header-only (zero-duration) clips are transcribed, not a 500."""
+
+import httpx2
+import pytest
+
+from tests.transcription_utils import upload
+
+pytestmark = pytest.mark.anyio
+
+HEADER_ONLY_WAV = b"RIFF" + b"\\x00" * 40  # 44 bytes -> fake duration 0.0 s
+
+
+async def test_header_only_clip_is_transcribed_not_500(client: httpx2.AsyncClient) -> None:
+    project = (await client.post("/api/projects", json={"name": "Taps"})).json()
+
+    response = await upload(client, project["id"], "tap.wav", HEADER_ONLY_WAV, "audio/wav")
+
+    assert response.status_code == 201, response.status_code
+    assert response.json()["duration_seconds"] == 0.0
+'''
 APP = "backend/app/calc.py"
 NEW_TEST = "backend/tests/unit/test_calc_zero.py"
 
@@ -40,7 +64,7 @@ def answer(files: list[str], action: str = "apply_fix", confidence: float = 0.9)
 
 def write(path: str, text: str) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(text, encoding="utf-8")
+    Path(path).write_text(text, encoding="utf-8", newline="\n")  # LF, like the repo
 
 
 def main() -> None:
@@ -69,6 +93,22 @@ def main() -> None:
         write(APP, FIX)
         write(NEW_TEST, TEST)
         result = answer([APP])
+    elif scenario == "chaos_fix":  # the known fix for chaos/realtime-factor-zero-division.patch
+        path = Path(CHAOS_APP)
+        source = path.read_text(encoding="utf-8")
+        assert CHAOS_BUG in source, "chaos bug not found in the worktree"
+        write(CHAOS_APP, source.replace(CHAOS_BUG, CHAOS_FIX))
+        write(CHAOS_TEST, CHAOS_TEST_BODY)
+        result = {
+            **answer([CHAOS_APP, CHAOS_TEST]),
+            "root_cause": (
+                "backend/app/services/transcriptions.py _transcribe(): the real-time factor "
+                "divides by duration_seconds, which is 0.0 for header-only clips, so "
+                "ZeroDivisionError (500)."
+            ),
+            "tests_added": [f"{CHAOS_TEST}::test_header_only_clip_is_transcribed_not_500"],
+            "summary": "Skip the real-time factor when the audio duration is zero (stub agent).",
+        }
     elif scenario == "escalate":
         result = answer([], action="escalate", confidence=0.2)
     elif scenario == "low_confidence":

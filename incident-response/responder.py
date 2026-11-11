@@ -61,7 +61,7 @@ MAX_WEBHOOK_BYTES = 1024 * 1024
 MAX_PROMPT_EVIDENCE_CHARS = 150_000
 OUTPUT_TAIL_LINES = 40
 INCIDENT_ID_RE = re.compile(r"^INC-[0-9]{8}-[0-9]{6}(?:-[0-9]+)?$")
-DEFAULT_COMPOSE_FILES = ("docker-compose.yml", "incident-response/compose.incident.yml")
+DEFAULT_COMPOSE_FILES = ("docker-compose.yml",)
 
 # Environment variables the agent (and the checks that run its code) may see. Everything else,
 # notably GROQ_API_KEY, GH_TOKEN/GITHUB_TOKEN, RENDER_* deploy hooks and DATABASE_URL, is dropped.
@@ -203,6 +203,9 @@ _RULE_UID_RE = re.compile(r"/alerting/grafana/([^/?#]+)/view")
 
 
 def alert_rule_uid(alert: dict[str, Any]) -> str | None:
+    """Grafana's `ruleUID` field, else the `__alert_rule_uid__` label, else the generatorURL."""
+    if alert.get("ruleUID"):
+        return str(alert["ruleUID"])
     labels = alert.get("labels") or {}
     if labels.get("__alert_rule_uid__"):
         return str(labels["__alert_rule_uid__"])
@@ -1013,14 +1016,21 @@ class Incident:
                 encoding="utf-8",
             )
             return None
+        # Same parameters as the stack start in test-incident.sh (docker-compose.yml interface of
+        # #30): own project, ports and image tag, so the user's `echonotes` stack is untouched.
         env = {
             **self.cfg.env,
+            "COMPOSE_PROJECT_NAME": self.cfg.compose_project,
             "TRANSCRIBER_PROVIDER": "fake",
             "GROQ_API_KEY": "",
             "APP_PORT": self.cfg.app_port,
             "GRAFANA_PORT": self.cfg.grafana_port,
+            "APP_IMAGE": f"echonotes-incident:{self.id.lower()}-fix",
+            "OBS_OTLP_ENDPOINT": self.cfg.env.get("OBS_OTLP_ENDPOINT", "http://lgtm:4318"),
+            "ONCALL_WEBHOOK_URL": self.cfg.env.get(
+                "ONCALL_WEBHOOK_URL", f"http://host.docker.internal:{self.cfg.port}/alert"
+            ),
             "GIT_SHA": fix_sha,
-            "INCIDENT_IMAGE_TAG": f"{self.id.lower()}-fix",
         }
         files = [arg for f in self.cfg.compose_files for arg in ("-f", f)]
         rebuild = self.log.run(

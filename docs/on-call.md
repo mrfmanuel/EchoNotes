@@ -47,10 +47,13 @@ uv run incident-response/responder.py --replay incident-response/incidents/INC-x
 1. Creates a worktree on a new branch `chaos/INC-<id>` from `origin/main` and commits
    [`chaos/realtime-factor-zero-division.patch`](../incident-response/chaos/README.md) there.
 2. Pushes `chaos/INC-<id>`, the base branch of the responder's PR, so the PR diff is only the fix.
-3. Starts app + Postgres + `grafana/otel-lgtm` from that worktree as compose project
-   `echonotes-incident` (app `:8001`, Grafana `:3001`). The override
-   `incident-response/compose.incident.yml` gives the image its own tag and pins the port, so the
-   user's `echonotes` stack (`:8000`, image `echonotes:local`) is never touched.
+3. Starts app + Postgres + `grafana/otel-lgtm` from that worktree with `docker-compose.yml`
+   `--profile observability`, as compose project `echonotes-incident`, with
+   `APP_PORT=8001`, `GRAFANA_PORT=3001`, `APP_IMAGE=echonotes-incident:<id>-chaos`,
+   `OBS_OTLP_ENDPOINT=http://lgtm:4318` and `ONCALL_WEBHOOK_URL=http://host.docker.internal:9095/alert`.
+   The user's `echonotes` stack (`:8000`, image `echonotes:local`) is never touched. The
+   responder later rebuilds only `app`, with the same variables and
+   `APP_IMAGE=echonotes-incident:<id>-fix`.
 4. Starts the responder for exactly one incident.
 5. Sends fake-provider traffic (`traffic.py`, 40 % "accidental tap" clips) until the alert fires.
 6. Waits for the responder, then prints the incident folder and the PR URL. The stack keeps running
@@ -58,8 +61,9 @@ uv run incident-response/responder.py --replay incident-response/incidents/INC-x
 
 Prerequisites: Git Bash (or any POSIX shell), Docker, `uv`, `gh` logged in, `claude` logged in.
 Use `INCIDENT_PUSH=0` for a dry run that neither pushes nor opens a PR, and
-`ONCALL_AGENT_CMD='["python","incident-response/tests/stub_agent.py"]'` to replace the model with
-the stub.
+`ONCALL_AGENT_CMD='["python","<repo>/incident-response/tests/stub_agent.py"]' ONCALL_STUB_SCENARIO=chaos_fix`
+to replace the model with a stub that applies the known minimal fix and a reproducing test. That
+proves the wiring (alert, evidence, policy, rebuild, verification) without a model call.
 
 ## Incident folder (`incident-response/incidents/INC-<UTC yyyymmdd-HHMMSS>/`)
 
@@ -150,7 +154,7 @@ branch, never `main`. The demo PR is closed without merging. A fix that is a gen
 
 ## Dedupe
 
-The key is the alert rule UID (from the `__alert_rule_uid__` label or the `generatorURL`) plus
+The key is the alert rule UID (Grafana's `alerts[].ruleUID`, else the `__alert_rule_uid__` label or the `generatorURL`) plus
 Grafana's alert `fingerprint`. A `firing` notification for a key with an open incident is
 ignored: Grafana repeats them every repeat interval. A `resolved` notification closes the key, is
 noted in that incident's `commands.log`, and never opens an incident. The state is kept in

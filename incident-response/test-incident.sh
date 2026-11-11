@@ -8,8 +8,9 @@
 #  1. git worktree on a NEW branch chaos/INC-<id> from BASE_REF (default origin/main), apply
 #     incident-response/chaos/$CHAOS_PATCH and commit it there (never on main)
 #  2. push chaos/INC-<id> (the base of the responder's PR, so its diff shows only the fix)
-#  3. start app + Postgres + grafana/otel-lgtm from that worktree as compose project
-#     `echonotes-incident` (APP_PORT 8001, GRAFANA_PORT 3001; never touches `echonotes`)
+#  3. start app + Postgres + grafana/otel-lgtm from that worktree (docker-compose.yml, profile
+#     `observability`) as compose project `echonotes-incident` with its own image tag
+#     (APP_IMAGE), APP_PORT 8001 and GRAFANA_PORT 3001; the `echonotes` stack is never touched
 #  4. start the responder on ONCALL_PORT (9095) for exactly one incident
 #  5. fake-provider traffic until the alert fires and the responder opens the incident
 #  6. wait for the responder, print the incident folder and the PR URL
@@ -17,21 +18,22 @@
 # The stack keeps running afterwards (for screenshots); `--cleanup` removes it. Run from Git Bash
 # on Windows or any POSIX shell. Needs: git, gh (logged in), docker compose, uv, claude.
 #
-# Environment (optional): BASE_REF, CHAOS_PATCH, APP_PORT, GRAFANA_PORT, ONCALL_PORT,
-# ALERT_TIMEOUT (s, 900), RESPONDER_TIMEOUT (s, 3600), INCIDENT_PUSH=0 (no push, no PR),
-# ONCALL_AGENT_CMD (stub agent instead of claude), OTEL_EXPORTER_OTLP_ENDPOINT.
+# Environment (optional): BASE_REF, CHAOS_PATCH, INCIDENT_PROJECT (echonotes-incident), APP_PORT,
+# GRAFANA_PORT, ONCALL_PORT, ALERT_TIMEOUT (s, 900), RESPONDER_TIMEOUT (s, 3600),
+# INCIDENT_PUSH=0 (no push, no PR), ONCALL_AGENT_CMD (+ ONCALL_STUB_SCENARIO) to replace claude
+# with a stub, OBS_OTLP_ENDPOINT (default http://lgtm:4318).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(git -C "$here" rev-parse --show-toplevel)"
 work="$here/.work"
-project="echonotes-incident"
-compose_files=(-f docker-compose.yml -f incident-response/compose.incident.yml)
+project="${INCIDENT_PROJECT:-echonotes-incident}"
 
 export APP_PORT="${APP_PORT:-8001}"
 export GRAFANA_PORT="${GRAFANA_PORT:-3001}"
 export ONCALL_PORT="${ONCALL_PORT:-9095}"
 export COMPOSE_PROJECT="$project"
+export OBS_OTLP_ENDPOINT="${OBS_OTLP_ENDPOINT:-http://lgtm:4318}"
 export ONCALL_WEBHOOK_URL="http://host.docker.internal:$ONCALL_PORT/alert"
 BASE_REF="${BASE_REF:-origin/main}"
 CHAOS_PATCH="${CHAOS_PATCH:-realtime-factor-zero-division.patch}"
@@ -50,9 +52,11 @@ for candidate in python3 python; do
 done
 [ -n "$PY" ] || die "no python3/python found"
 
-# Fixed, safe values for every compose call: fake provider, no Groq key, the incident ports.
+# Fixed, safe values for every compose call (docker-compose.yml interface of #30): own project,
+# ports, fake provider, no Groq key, OTLP to the lgtm service, alert webhook to the responder.
 compose_env() {
-  env TRANSCRIBER_PROVIDER=fake GROQ_API_KEY= APP_PORT="$APP_PORT" GRAFANA_PORT="$GRAFANA_PORT" \
+  env COMPOSE_PROJECT_NAME="$project" TRANSCRIBER_PROVIDER=fake GROQ_API_KEY= \
+    APP_PORT="$APP_PORT" GRAFANA_PORT="$GRAFANA_PORT" OBS_OTLP_ENDPOINT="$OBS_OTLP_ENDPOINT" \
     ONCALL_WEBHOOK_URL="$ONCALL_WEBHOOK_URL" "$@"
 }
 
@@ -60,8 +64,8 @@ cleanup() {
   local delete_remote="$1"
   say "cleanup: compose project $project"
   if [ -f "$repo/docker-compose.yml" ]; then
-    (cd "$repo" && compose_env docker compose -p "$project" "${compose_files[@]}" \
-      --profile observability down -v --remove-orphans) || true
+    (cd "$repo" && compose_env docker compose -p "$project" --profile observability \
+      down -v --remove-orphans) || true
   fi
   say "cleanup: worktrees and local branches"
   for dir in "$work"/chaos-INC-* "$work"/oncall-INC-* "$work"/repro-INC-*; do
@@ -134,8 +138,11 @@ fi
 
 # --- 3. stack ---------------------------------------------------------------------------------------
 say "3/6 start $project (app :$APP_PORT, Grafana :$GRAFANA_PORT) from the chaos worktree"
-(cd "$chaos_wt" && compose_env GIT_SHA="$chaos_sha" INCIDENT_IMAGE_TAG="$(echo "$ID" | tr 'A-Z' 'a-z')-chaos" \
-  docker compose -p "$project" "${compose_files[@]}" --profile observability up -d --build --wait)
+grep -q 'profiles: \[observability\]' "$chaos_wt/docker-compose.yml" ||
+  die "docker-compose.yml at $BASE_REF has no observability profile (needs #30)"
+(cd "$chaos_wt" && compose_env GIT_SHA="$chaos_sha" \
+  APP_IMAGE="echonotes-incident:$(echo "$ID" | tr 'A-Z' 'a-z')-chaos" \
+  docker compose -p "$project" --profile observability up -d --build --wait)
 curl -fsS "http://localhost:$APP_PORT/api/health" >/dev/null || die "app not healthy on :$APP_PORT"
 echo "app:     http://localhost:$APP_PORT"
 echo "grafana: http://localhost:$GRAFANA_PORT  (admin/admin, local only)"

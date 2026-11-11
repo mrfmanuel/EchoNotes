@@ -1,0 +1,44 @@
+You are the tech lead (orchestrator) for EchoNotes. This is prompt 4 of 4 (the last one): observability, alerting on user impact, the on-call responder agent, and a final rubric audit (milestone "M4 Observability & On-call"). Work autonomously through ALL steps below in this single session; do not stop to ask me questions unless you are truly blocked. Everything you write must be in English. Follow AGENTS.md, docs/process.md and docs/agent-team.md (issue → branch → PR → CI green → qa-engineer APPROVED → squash-merge → close issue with evidence). `product-manager` grooms the M4 issues first (adjust them to the design below), `devops-sre` builds, `qa-engineer` verifies. Read `course-reference/module4-devops-observability.md` for the expected design principles ("the model may reason; the system must observe, authorize, verify, and remember").
+
+First commit: add `prompts/P4-observability-oncall.md` (this prompt) in a docs commit.
+
+Keep it pragmatic: the goal is a small, working, demonstrable loop — not a production SRE platform. Prefer the simplest tools that satisfy the rubric.
+
+## Rubric targets
+- **Observability (2 pts):** the key user journey (upload audio → transcript → export) is instrumented with **metrics, traces and structured logs that share a trace ID**; no customer data or credentials in telemetry; signals are **collected, stored and viewable in a UI**.
+- **Alerting on user impact (1 pt):** at least one alert based on user impact (error ratio / latency of the journey), NOT CPU.
+- **On-call agent (2 pts):** an agent **wakes up on the alert and fixes the issue** — demonstrated end to end with saved evidence.
+
+## Design (follow it unless something is clearly broken; document any deviation)
+
+1. **Instrumentation (backend):**
+   - OpenTelemetry SDK + auto-instrumentation for FastAPI, SQLAlchemy and httpx (Groq calls). Service name `echonotes-api`, resource attrs `deployment.environment` (APP_ENV) and `service.version` (+ commit).
+   - Custom spans around transcription and export with SAFE attributes only (ids, sizes, durations, provider, language, status, error class).
+   - Custom metrics: `echonotes_transcriptions_total{provider,status}` (status = success|client_error|provider_error|timeout), `echonotes_transcription_duration_seconds` (histogram), `echonotes_exports_total{status}`; plus standard HTTP server metrics.
+   - JSON logs get `trace_id` and `span_id` next to the existing `request_id`; logs are also exported via OTLP so they land in Loki and link to traces.
+   - Telemetry is fully optional: if `OTEL_EXPORTER_OTLP_ENDPOINT` is empty, the app runs exactly as today (prod on Render keeps working without a collector; document "prod telemetry backend = optional, e.g. Grafana Cloud OTLP" as future work).
+   - Privacy tests: assert spans/metric labels/log records produced during a transcription + export contain no transcript text, titles, filenames, bytes, API keys or DB URLs.
+
+2. **Local observability stack (`observability/`):** use the single-container `grafana/otel-lgtm` image (OTel Collector + Prometheus + Loki + Tempo + Grafana) under a compose profile, e.g. `docker compose --profile observability up --build` (one command). Provision via mounted files: datasources (with trace↔log correlation by trace_id), a dashboard `observability/dashboard.json` for the key journey (request rate, error ratio, p95 latency, transcriptions by status, recent error logs, link to traces), and alerting. Add `make obs-up` / `make obs-down`.
+
+3. **Alert on user impact (`observability/alerts.yaml`, provisioned into Grafana):** "EchoNotes transcription failure ratio high": failed transcriptions (provider_error|timeout + 5xx on the journey endpoints) / total > 20 % over a short window (use short windows like 2–5 min so the demo is quick), with a minimum request count to avoid noise. Labels: severity, journey. Annotations: summary, runbook link (`docs/runbooks/transcription-failures.md`), dashboard link. Contact point: webhook to the local responder (e.g. `http://host.docker.internal:9095/alert`).
+
+4. **On-call responder (`incident-response/`)** — the model reasons, the code enforces permissions:
+   - `responder.py`: small HTTP server that runs on my Windows host (Python via `uv run`), receives the Grafana webhook, de-duplicates, and creates `incident-response/incidents/INC-<timestamp>/`.
+   - `collect-evidence.sh` (or .py): bounded, read-only, allowlisted queries (Prometheus error ratio + transcriptions by status, last N error log lines from Loki with trace_ids, 1–3 failing traces from Tempo, current git commit and recent commits) → `evidence.json`. No secrets in the packet.
+   - Creates an isolated git worktree on a branch `oncall/INC-<id>` and runs **Claude Code headless** there: `claude -p "<responder-task.md + evidence>"` with a restricted tool allowlist (read/edit files, run tests; no network, no git push, no deploy), `--output-format json`, and a max-turns/timeout limit. The agent must return a JSON matching `response.schema.json` (root cause, evidence used, files changed, confidence, proposed action).
+   - `autonomy-policy.yaml` + enforcement in `responder.py` (NOT in the prompt): allowed paths for changes (e.g. `backend/app/**`, tests), max changed lines, tests must pass (`uv run pytest -m "not integration"` in the worktree), otherwise escalate (write `escalation.md`, no changes applied).
+   - If the policy passes: commit in the worktree, push the branch and open a PR `fix: ... (INC-<id>)` with the incident summary and evidence (this is how it "fixes the issue" in a controlled way), then apply the fix to the locally running stack (rebuild the app container from the fixed worktree) and run `runbooks/verify-recovery.sh` (error ratio back below threshold + smoke test passes). Record everything in the incident folder: `alert.json`, `evidence.json`, `agent-response.json`, `policy-decision.json`, `commands.log`, `verification.md`, `report.md`.
+   - `test-incident.sh`: ONE command to run the whole demo: start app + observability stack from an "incident" worktree that contains a deliberately injected, realistic bug in the transcription path (e.g. a small patch in `incident-response/chaos/` that breaks response parsing or error mapping — keep it a code bug the agent can find from the stack trace and tests), start the responder, generate traffic with the fake provider until the alert fires, then wait for the responder to finish and print the incident folder path and PR URL. The injected bug must never reach `main`.
+
+5. **Run the demo for real, once, end to end** and commit the resulting `incidents/INC-.../` folder (scrub anything sensitive) plus 3–4 screenshots in `docs/images/` (Grafana dashboard during the incident, the firing alert, a trace with correlated logs, the responder PR). Close the responder PR without merging (the bug only existed in the incident worktree) OR, if the fix is a genuine hardening improvement for main, merge it through the normal QA/CI gate — explain the choice in the incident report.
+
+6. **Docs:** `docs/observability.md` (architecture diagram, signals, how to open Grafana, how traces/logs/metrics correlate, privacy rules, prod telemetry as optional), `docs/runbooks/transcription-failures.md`, `docs/on-call.md` (the responder loop with a Mermaid diagram, capability table of the agent: tools, credentials, what it can/cannot do, the autonomy policy, escalation), `docs/operations-and-security-report.md` (for INC-001: deployed version + user impact, alert + evidence, model + config used, proposed action, policy decision + commands executed, recovery verification), and update `AGENTS.md` links.
+
+7. **Final rubric audit (product-manager + qa-engineer, independently):** go through `course-reference/project-README.md` criterion by criterion and score the repo honestly (evidence links, gaps). Fix any gap that is cheap. Then:
+   - README: final rubric table with evidence links for all 12 criteria, "How to review this project in 10 minutes" section (live demo link, one-command local run, `make test`, `make obs-up` + `incident-response/test-incident.sh`, where the evidence is), screenshots.
+   - `docs/ai-usage-report.md`: P4 section + a short overall retrospective (what worked, what the agents got wrong, what humans verified).
+   - Make sure `make test` passes, CI is green, deploy the final `main` to dev (automatic) and then trigger `deploy-prod` (I will approve — print "APPROVE NOW: <run URL>" and wait with `gh run watch`).
+   - Close milestone M4 and any remaining issues with evidence (or label them `future` with a reason). Create a git tag `v1.0.0` + GitHub release with release notes.
+
+When done, print: the final rubric self-score table, the incident folder + responder PR URL, the Grafana URL/credentials for local use, the prod health output, the release URL, and **the exact commit SHA I should submit** (the `v1.0.0` commit on main).

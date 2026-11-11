@@ -29,7 +29,26 @@ Render builds the image itself from the repo's root `Dockerfile` at the requeste
 | dev | <https://echonotes-dev.onrender.com> | `echonotes-dev` (free) | `development` | `groq` | **automatic** after CI passes on `main` (`deploy-dev.yml`) |
 | prod | <https://echonotes-prod.onrender.com> | `echonotes-prod` (free) | `production` | `groq` | **manual** promotion with approval (`deploy-prod.yml`, environment `production`) |
 
-Render env vars per service (values live only in Render): `DATABASE_URL` (Neon connection string, `postgresql+psycopg://…?sslmode=require`), `APP_ENV` (`dev` / `prod`), `TRANSCRIBER_PROVIDER=groq`, `GROQ_API_KEY`. Render itself sets `PORT` and `RENDER_GIT_COMMIT`.
+Render env vars per service (values live only in Render): `DATABASE_URL` (Neon connection string, `postgresql+psycopg://…?sslmode=require`), `APP_ENV` (`dev` / `prod`), `TRANSCRIBER_PROVIDER=groq`, `GROQ_API_KEY`, `GEMINI_API_KEY`. Render itself sets `PORT` and `RENDER_GIT_COMMIT`.
+
+### AI project summary variables (US-22, #60)
+
+**No new Render variable is required.** `SUMMARIZER_PROVIDER` is left unset on Render, so the auto rule picks `gemini` because `GEMINI_API_KEY` is already set on the service; every other variable falls back to the app default. Set one of them in Render only to override it (e.g. `GEMINI_FALLBACK_MODEL=` to disable the fallback). Local compose without `.env`, CI and the tests get `fake` (no key → auto → `fake`; nothing calls an LLM).
+
+| Variable | Default (app and compose) | Meaning |
+|---|---|---|
+| `SUMMARIZER_PROVIDER` | empty = auto | `gemini` \| `groq` \| `fake`. Auto: `gemini` if `GEMINI_API_KEY` is non-empty, else `fake`. An explicit `gemini` without `GEMINI_API_KEY` (or `groq` without `GROQ_API_KEY`) fails at startup |
+| `GEMINI_API_KEY` | empty | **secret** (Render env var / local `.env` only; never logged). Empty is valid and means `fake` under auto |
+| `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta` | not passed by compose (comes from `.env` if set) |
+| `GEMINI_MODEL` | `gemini-3.8-flash` | primary model |
+| `GEMINI_FALLBACK_MODEL` | `gemini-3.5-flash-lite` | retried once on 429; empty = no fallback |
+| `GROQ_SUMMARY_MODEL` | `openai/gpt-oss-120b` | text-only Groq summaries; reuses `GROQ_API_KEY`, `GROQ_BASE_URL` |
+| `SUMMARY_TIMEOUT_SECONDS` | `90` | whole job, fallback included |
+| `SUMMARY_MAX_CHARS` | `60000` | total transcript characters sent; above it the content is cut and the summary says so |
+| `SUMMARY_MAX_IMAGES` | `8` | screenshots sent per summary |
+| `SUMMARY_IMAGE_MAX_PX` | `1280` | longest side after downscaling |
+
+`docker-compose.yml` passes these through with the same defaults as `backend/app/config.py` (never an empty string for a model or a number, which would override the app default or fail validation). `.env.example` lists them with comments and no values for secrets.
 
 ### GitHub secrets and variables (names only)
 
@@ -55,6 +74,7 @@ GitHub environments: `development` (protected branches only) and `production` (r
 - A deploy (Docker build on Render + start) took **46–63 s** in the P3 runs; `deploy.sh` allows 15 min.
 - Neon free branches also suspend when idle; the first query after a pause adds a little latency. The health check's 2 s DB timeout has been enough so far.
 - One Groq call (1 s silent clip) per deploy from the smoke test.
+- One small Gemini summary per **dev** deploy (`SMOKE_SUMMARY=1`, see below). Prod deploys and rollbacks skip it to save free quota.
 
 ### Database migrations on deploy
 
@@ -75,7 +95,7 @@ docker compose down              # stop, keep the database volume
 docker compose down -v           # stop and wipe the database
 ```
 
-- **No `.env` needed.** `docker-compose.yml` has safe defaults: `TRANSCRIBER_PROVIDER=fake`, Postgres user/password/db `echonotes`, and `DATABASE_URL` pointing at the `db` service. `.env` is loaded if it exists (`env_file` with `required: false`), e.g. to set `TRANSCRIBER_PROVIDER=groq` and `GROQ_API_KEY`.
+- **No `.env` needed.** `docker-compose.yml` has safe defaults: `TRANSCRIBER_PROVIDER=fake`, Postgres user/password/db `echonotes`, and `DATABASE_URL` pointing at the `db` service. `.env` is loaded if it exists (`env_file` with `required: false`), e.g. to set `TRANSCRIBER_PROVIDER=groq` and `GROQ_API_KEY`, or `GEMINI_API_KEY` for real AI summaries (without it summaries use `fake`; an empty `GEMINI_API_KEY=` is fine).
 - Values in the compose `environment:` block win over `.env`, so the host-oriented `DATABASE_URL=...@localhost:5432/...` and the empty `STATIC_DIR=` from `.env.example` do not affect the container.
 - Services: `db` = `postgres:16` with the named volume `pgdata` and a `pg_isready` healthcheck (no host port). `app` = the root `Dockerfile`, starts after `db` is healthy, published on `8000:8000`.
 
@@ -115,5 +135,7 @@ scripts/resolve-commit.sh health <base-url>         # commit running there, or "
 ```
 
 `deploy.sh`: triggers the Render deploy hook with `&ref=<sha>` (200 = started, 202 = another deploy in progress → retried with backoff up to `DEPLOY_HOOK_WAIT`=600 s, anything else fails), polls `/api/health` every 15 s until `commit == sha` (`DEPLOY_TIMEOUT`=900 s, 5xx/timeouts tolerated) and `environment` matches, then runs `SMOKE_ALLOW_EMPTY_TEXT=1 SMOKE_EXPECT_COMMIT=<sha> scripts/smoke.sh <base-url>`. It writes a job summary (env, URL, target, commit running before, deploy id, result, durations). The hook URL comes only from `DEPLOY_HOOK_URL`, is never printed and is masked in Actions. Smoke on dev/prod uses the service's real provider (Groq) with the 1 s silent clip: one Groq call per deploy, made by the service itself; CI never holds the Groq key.
+
+**Summary smoke on dev only (#60).** `deploy-dev.yml` also sets `SMOKE_SUMMARY=1` and `SMOKE_SUMMARY_ALLOW_PROVIDER_ERROR=1`, which `deploy.sh` passes on to `smoke.sh`. The smoke project then gets one AI summary from dev's real Gemini (a silent-clip transcript and a 4x4 PNG, so the call is tiny). The step polls `latest` for up to 120 s, checks that the HTML starts with `<!doctype html` and has no `<script`, downloads it (`text/html`, attachment `summary.html`) and requires `summary.html` in the ZIP. A job that ends `failed` with `provider_error` or `provider_timeout` is only a **warning**: free-tier quota or a slow provider is not a defect of the deployed commit. Any other HTTP status, a job stuck past 120 s, `internal_error`/`interrupted`, or bad HTML fails the deploy. Prod deploys and rollbacks do not set the flag, so they do not spend Gemini quota; CI's compose smoke does not set it either (the `fake` summarizer is covered by the backend tests).
 
 Secrets / variables used: see [the table above](#github-secrets-and-variables-names-only). Tests: `bash scripts/tests/test_deploy.sh` ([testing.md](testing.md#deploy-script-tests-scriptsdeploysh-25-26-27)). Confirmed on the first live runs: the hook answers **200** with a deploy id, `RENDER_GIT_COMMIT` is the full 40-char SHA. The release flow, rollback and evidence are in [release-process.md](release-process.md).

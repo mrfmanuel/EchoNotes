@@ -1,6 +1,6 @@
 # Architecture
 
-> Status: implemented (v1.0.0). App in M2, deployment on Render + Neon in M3 ([deployment.md](deployment.md)), OpenTelemetry and the on-call responder in M4 ([observability.md](observability.md), [on-call.md](on-call.md)).
+> Status: implemented (v1.0.0). App in M2, deployment on Render + Neon in M3 ([deployment.md](deployment.md)), OpenTelemetry and the on-call responder in M4 ([observability.md](observability.md), [on-call.md](on-call.md)). AI project summary (US-22) in M5.
 
 ## Overview
 
@@ -11,6 +11,10 @@ flowchart LR
     A -- "Transcriber interface" --> T{provider}
     T -->|groq| G[Groq Whisper API<br/>whisper-large-v3-turbo]
     T -->|fake| F[Deterministic fake]
+    A -- "Summarizer interface<br/>(background job, M5)" --> S{provider}
+    S -->|gemini| GM[Gemini API<br/>gemini-3.8-flash]
+    S -->|groq| GQ[Groq chat<br/>openai/gpt-oss-120b]
+    S -->|fake| SF[Deterministic fake]
     A -. "OTLP (M4)" .-> O[(Telemetry backend)]
 ```
 
@@ -53,6 +57,7 @@ Every other request takes the same middleware → router → service → DB path
 | API | `app/api/*.py` | FastAPI routers, request validation, HTTP errors |
 | Services | `app/services/*.py` | Business rules: slugs, upload validation, export building |
 | Transcription | `app/transcription/` | `Transcriber` protocol, `GroqTranscriber`, `FakeTranscriber`, factory chosen by `TRANSCRIBER_PROVIDER` |
+| Summarization | `app/summarization/`, `app/services/summaries.py` | `Summarizer` protocol, `GeminiSummarizer`, `GroqSummarizer`, `FakeSummarizer`, factory (auto rule), prompt builder, sanitize-then-embed renderer; the background job (US-22, see [below](#ai-project-summary-us-22)) |
 | Persistence | `app/db/` (+ `alembic/`) | Async SQLAlchemy 2 models and session (`get_session` dependency), psycopg 3 driver; Alembic migrations in `backend/alembic/` |
 | Settings | `app/config.py` | `pydantic-settings`, reads process env vars only (see `.env.example`); `DATABASE_URL` `postgres://`/`postgresql://` is normalized to `postgresql+psycopg://` |
 | Logging | `app/logging.py`, `app/middleware.py` | JSON logs, `X-Request-ID` middleware, one access line per request (see [observability.md](observability.md#logging-m2)) |
@@ -82,12 +87,96 @@ class TranscriptionResult:
 - **Groq response mapping:** `text` → `text`, `duration` → `duration_seconds` (`None` if absent), `language` normalized to ISO-639-1 (`english`/`spanish`/`portuguese` → `en`/`es`/`pt`, a 2-letter code is kept, anything else → the hint). Non-2xx, connection errors and malformed JSON raise `ProviderError` (HTTP `502 provider_error`); `httpx2` timeouts raise `ProviderTimeout` (HTTP `504 provider_timeout`). Messages and logs carry only the provider name and status code.
 - **Upload flow** (`POST /api/projects/{projectId}/transcriptions`, `app/api/transcriptions.py`, `app/services/uploads.py`, `app/services/transcriptions.py`): 404 check (the read transaction is closed before the provider call, so no DB connection is held while transcribing) → type check (extension, else audio content type; `415`) → size-capped read into memory (stops at `MAX_AUDIO_MB` × 1024² + 1 byte; `413`) → empty → `422` → transcribe → insert the transcript and bump the project's `updated_at` in one transaction. A provider failure raises before any write. The audio reference is dropped and the upload closed in `finally`. When the filename has no known extension (browser recordings such as `blob`), the provider receives the name with the extension matching the content type, because Whisper detects the format from it.
 
+### Summarizer interface
+
+The AI project summary (US-22, [product-spec.md](product-spec.md#us-22)) uses the same pattern as the Transcriber: a protocol, one class per provider, a factory that runs once at startup and a `get_summarizer` dependency on `app.state.summarizer` that tests override.
+
+```python
+class Summarizer(Protocol):
+    name: str  # "gemini" | "groq" | "fake"
+    async def summarize(self, request: SummaryRequest) -> SummaryResult: ...
+
+@dataclass(frozen=True)
+class SummaryRequest:
+    system_instruction: str
+    user_text: str                    # delimited transcripts + the numbered screenshot list
+    images: list[SummaryImage]        # n (1-based), mime_type, downscaled bytes
+    transcript_titles: list[str]      # read only by the fake provider
+    transcript_texts: list[str]
+
+@dataclass(frozen=True)
+class SummaryResult:
+    fragment: str                     # UNTRUSTED HTML fragment, always sanitized before storing
+    model: str                        # the model that actually answered (the fallback when used)
+```
+
+- **Errors** (`app/summarization/base.py`): `SummarizerError(provider, status_code)`, its subclass `SummarizerRateLimited` (429) and `SummarizerTimeout`. They carry the provider name and HTTP status only, never the key, prompt or response text.
+- **Selection** (`factory.py`): `SUMMARIZER_PROVIDER` empty = **auto**: `gemini` when `GEMINI_API_KEY` is set, otherwise `fake`. An explicit `gemini` without `GEMINI_API_KEY`, or `groq` without `GROQ_API_KEY`, raises `SummarizerConfigError` at startup. So Render (which has `GEMINI_API_KEY`) gets Gemini with no new variable, and compose without `.env`, CI and the tests get `fake`. Variables: [deployment.md](deployment.md#ai-project-summary-variables-us-22-60).
+- **gemini** (`gemini.py`): `POST {GEMINI_BASE_URL}/models/{model}:generateContent` with header `x-goog-api-key`, `system_instruction`, one user turn with the text plus each screenshot as `inline_data` (base64), `generationConfig.maxOutputTokens=8192`. No `temperature` (Gemini 3.6+ ignores it and will reject it). The text is `candidates[0].content.parts[*].text`. On **429** from `GEMINI_MODEL` it retries once with `GEMINI_FALLBACK_MODEL`; any other status (including 402 billing) fails without a fallback.
+- **groq** (`groq.py`): OpenAI-compatible `POST {GROQ_BASE_URL}/chat/completions` with `GROQ_SUMMARY_MODEL`, reusing `GROQ_API_KEY`. Text only: screenshots are listed by number, filename and linked transcript, and no image bytes are sent.
+- **fake** (`fake.py`): deterministic, no network. It echoes the transcripts **unescaped** on purpose, so tests prove the sanitizer removes injected markup.
+- Both HTTP providers use the shared `http.py` (`httpx2`, the same client style as `app/transcription/groq.py`). No vendor SDK.
+
+**Verified model ids** (checked by the tech lead on **2026-11-11** with the Gemini models list API, `GET /v1beta/models`, on our key, and in Google's model docs, <https://ai.google.dev/gemini-api/docs/models>): default **`gemini-3.8-flash`** (stable, free tier, text + image input) and fallback **`gemini-3.5-flash-lite`**. Groq text fallback provider: `openai/gpt-oss-120b`. Both Gemini ids are settings (`GEMINI_MODEL`, `GEMINI_FALLBACK_MODEL`), so a model retirement is a Render env change, not a code change.
+
+### AI project summary (US-22)
+
+**Background job.** `POST /api/projects/{projectId}/summaries` checks the project (404) and that it has at least one transcript (409 `no_transcripts`). If the project already has a `pending`/`running` job it returns that one (202), otherwise it inserts a `pending` row and returns **202** at once. The request's DB session is closed, then `asyncio.create_task` starts the job. Strong references live in `app.state.summary_tasks` and the lifespan cancels them at shutdown. The job (`app/services/summaries.py`) uses its own short-lived sessions, so no connection is held while the provider works:
+
+1. Load the project, its transcripts and the selected screenshots, build the prompt and mark the row `running` (`started_at`).
+2. Call the provider inside `asyncio.wait_for(SUMMARY_TIMEOUT_SECONDS)` (the whole job, fallback included).
+3. Sanitize and render (below), then store `succeeded` with `html`, `model`, counts and `truncated`, and delete the project's older summaries (regeneration keeps one).
+4. Any failure stores `failed` with a safe `error_code`: `provider_timeout`, `provider_error` (also a 429 from both models) or `internal_error`. The provider's response text is never stored or logged. If the new job fails, an older succeeded summary is kept and still goes into the ZIP.
+
+**Startup recovery.** The lifespan runs `UPDATE summaries SET status='failed', error_code='interrupted', finished_at=now WHERE status IN ('pending','running')` (rows left by a restart or deploy) and logs only the count.
+
+**Prompt rules** (`prompt.py`, pure, unit-tested). Transcripts go oldest first, each inside `<transcript n=".." title="..">…</transcript>` delimiters as untrusted data. When the total text is over `SUMMARY_MAX_CHARS`, the budget is split **max-min fair**: short transcripts stay whole, the longer ones share the rest equally and are cut at the end. Up to `SUMMARY_MAX_IMAGES` screenshots are sent: those linked to a sent transcript first (oldest first), then unlinked ones (newest first). Each is numbered 1..k and downscaled so its longest side is at most `SUMMARY_IMAGE_MAX_PX` (Pillow, `Image.MAX_IMAGE_PIXELS` bounded, re-encoded as PNG or JPEG). Anything cut sets `truncated`, and the model is told to say so. The system instruction asks for an HTML fragment in the transcripts' dominant language (title, overview, key points, decisions/action items, one section per transcript, `<figure data-screenshot="N">` placeholders) and says that everything inside the transcripts is data and any instructions in it must be ignored.
+
+**Sanitize, then embed** (`render.py`). The model output is treated as hostile:
+
+1. Strip a markdown code fence if present.
+2. Sanitize with **`nh3`** against the tag allowlist (`h1 h2 h3 p ul ol li strong em blockquote figure figcaption br hr table thead tbody tr th td code`). The only attribute kept is `data-screenshot` on `figure`: no `a`, `img`, `style`, `on*` or URLs survive, and `script`/`style`/`iframe`/`svg`/… are removed with their content.
+3. **Only after** sanitizing, replace each `<figure data-screenshot="N">` whose N is a screenshot we actually sent with our own `<figure><img src="data:<mime>;base64,…" alt="Screenshot N"><figcaption>…</figcaption></figure>` (caption as plain text). Unknown N are dropped. The model can never produce an `<img>` or a URL itself.
+4. Wrap the result in our template: `<!doctype html>`, `<meta charset>`, a CSP `default-src 'none'; img-src data:; style-src 'unsafe-inline'`, inline light/dark CSS, and a header with the escaped project name, generation time, provider/model and a truncation note when needed.
+
+The result is one self-contained file. The SPA shows it in `<iframe sandbox="" srcdoc>` (no scripts, no same-origin), `GET …/summaries/{summaryId}/download` serves it as `text/html; charset=utf-8` attachment `summary.html`, and the ZIP export adds the same bytes as `<slug>/summary.html` plus a link in its README.
+
+**Sequence.**
+
+```mermaid
+sequenceDiagram
+    participant FE as React SPA (SummaryPanel)
+    participant R as Router (app/api/summaries.py)
+    participant J as Job task (app/services/summaries.py)
+    participant P as Summarizer (gemini | groq | fake)
+    participant DB as Postgres
+    FE->>R: POST /api/projects/{id}/summaries
+    R->>DB: project? (404) transcripts? (409) active job? (return it)
+    R->>DB: INSERT summaries (pending)
+    R-->>FE: 202 Summary {status: pending}
+    R-)J: asyncio.create_task (span summary.generate)
+    J->>DB: load transcripts + screenshots, set running
+    J->>P: summarize(request) within SUMMARY_TIMEOUT_SECONDS
+    P-->>J: fragment + model (Gemini: 429 -> one retry with the fallback model)
+    J->>J: strip fence, nh3 sanitize, embed our <img> figures, wrap in template
+    J->>DB: succeeded + html, delete older summaries (or failed + error_code)
+    loop every 3 s while pending/running
+        FE->>R: GET /api/projects/{id}/summaries/latest
+        R-->>FE: Summary (html when succeeded)
+    end
+    FE->>R: GET …/summaries/{summaryId}/download
+    R-->>FE: text/html attachment summary.html
+```
+
+Telemetry: span `summary.generate`, `echonotes_summaries_total{provider,status}` and `echonotes_summary_duration_seconds` ([observability.md](observability.md#traces-tempo)), with IDs, counts, sizes and status only.
+
 ### Data model
 
 ```mermaid
 erDiagram
     PROJECT ||--o{ TRANSCRIPT : contains
     PROJECT ||--o{ SCREENSHOT : contains
+    PROJECT ||--o{ SUMMARY : "AI summaries (US-22)"
     TRANSCRIPT |o--o{ SCREENSHOT : "optionally linked"
     PROJECT {
         uuid id PK
@@ -119,9 +208,25 @@ erDiagram
         bytea data
         timestamptz created_at
     }
+    SUMMARY {
+        uuid id PK
+        uuid project_id FK "ON DELETE CASCADE"
+        string status "pending|running|succeeded|failed"
+        string provider
+        string model "nullable"
+        string error_code "nullable, safe code only"
+        bool truncated
+        int transcript_count
+        int image_count
+        text html "nullable, set when succeeded"
+        timestamptz created_at
+        timestamptz started_at
+        timestamptz finished_at
+    }
 ```
 
-- `ON DELETE CASCADE` from project to transcripts and screenshots, and `ON DELETE SET NULL` from transcript to screenshot.
+- `ON DELETE CASCADE` from project to transcripts, screenshots and summaries, and `ON DELETE SET NULL` from transcript to screenshot.
+- `summaries` (migration `0002_summaries`) has a **partial unique index** `uq_summaries_active_project` on `project_id WHERE status IN ('pending','running')` (Postgres and SQLite), so a race can never create two active jobs for one project; the losing insert's `IntegrityError` returns the existing job.
 - List endpoints never select `screenshot.data` (they load metadata only).
 - Screenshot uploads are read in 64 KiB chunks up to `MAX_IMAGE_MB` and typed by magic bytes (`app/services/images.py`). `.md`/`.txt` rendering is a pure function (`app/services/transcript_format.py`) shared by downloads and the export, so both produce identical bytes.
 - The ZIP export (`app/services/export.py`) plans every path first (pure, unit-tested), then writes into a `SpooledTemporaryFile` (memory up to 16 MiB, then an anonymous temp file), loading one image at a time, and streams it. The file is closed (discarded) when the stream ends; nothing is persisted.
@@ -136,6 +241,6 @@ erDiagram
 
 ## Cross-cutting
 
-- **Privacy:** audio is held in memory only for the request. Logs contain IDs, sizes and status codes, never content (see [observability.md](observability.md)).
+- **Privacy:** audio is held in memory only for the request. Logs contain IDs, sizes and status codes, never content (see [observability.md](observability.md)). Generating a summary sends the project's transcripts and screenshots to the configured LLM provider (Gemini's free tier may use data to improve Google products); the UI says so next to the button.
 - **Errors:** JSON `{"detail": "...", "code": "..."}` as defined in `openapi.yaml`.
 - **Config:** 12-factor env vars only.

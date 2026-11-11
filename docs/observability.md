@@ -90,6 +90,8 @@ All signals share the resource `service.name=echonotes-api`, `service.version`, 
 | `echonotes_transcriptions_total` | `provider`, `status` | one per `POST /api/projects/{id}/transcriptions`. `status`: `success`, `client_error` (4xx), `provider_error` (502), `timeout` (504), `server_error` (500, unhandled exception) |
 | `echonotes_transcription_duration_seconds` (`_bucket`, `_sum`, `_count`) | `provider`, `status` | duration of the whole transcription request |
 | `echonotes_exports_total` | `status` (`success`, `error`) | one per `GET /api/projects/{id}/export` |
+| `echonotes_summaries_total` | `provider` (`gemini`, `groq`, `fake`), `status` | one per finished AI summary job (US-22). `status`: `success`, `rate_limited` (429 also from the fallback model), `provider_error`, `timeout`, `internal_error`. A job cancelled by an app shutdown is not counted (startup recovery marks it `interrupted`) |
+| `echonotes_summary_duration_seconds` (`_bucket`, `_sum`, `_count`) | `provider`, `status` | duration of the whole summary job, fallback included. Buckets `0.1 0.5 1 2.5 5 10 20 30 45 60 90 120 +Inf` |
 | `http_server_request_duration_seconds` (`_bucket`, `_sum`, `_count`) | `http_request_method`, `http_response_status_code`, `http_route` (template, e.g. `/api/projects/{projectId}/transcriptions`), `url_scheme`, `network_protocol_version` | every API request (FastAPI instrumentation, stable HTTP semconv). Also `http_server_active_requests`, `http_server_request_body_size_bytes`, `http_server_response_body_size_bytes` |
 | `db_client_connections_usage` | `pool_name="echonotes"`, `state` | SQLAlchemy pool |
 | `target_info` | `vcs_ref_head_revision`, `service_version`, `deployment_environment` | which commit is reporting |
@@ -110,6 +112,8 @@ sum(rate(http_server_request_duration_seconds_count{job="echonotes-api"}[5m]))  
 sum(rate(http_server_request_duration_seconds_count{http_response_status_code=~"5.."}[5m]))
   / sum(rate(http_server_request_duration_seconds_count[5m]))                            # 5xx ratio
 sum by (status) (increase(echonotes_exports_total[15m]))
+sum by (provider, status) (increase(echonotes_summaries_total[1h]))                    # AI summaries
+histogram_quantile(0.95, sum by (le, provider) (rate(echonotes_summary_duration_seconds_bucket[15m])))
 ```
 - The app exports every 5 s (`OTEL_METRIC_EXPORT_INTERVAL`), and the Prometheus datasource uses `timeInterval: 5s`.
 - **`increase()`, new series and restarts:** a counter series (one per `provider`/`status` and app process) appears in Prometheus at its **first export**. `increase()` has no zero before that sample, so it misses **everything counted before the first export** of the series. That is up to one export interval (5 s) of requests, not just one request. QA observed that 4 of 4 provider errors right after an app restart counted as 0, and 3 server errors as about 1. So a short burst of a new failure mode, right after a restart, can be invisible to the alert. A sustained incident keeps adding samples and is counted from the second export on. An app restart starts new series (new `service_instance_id`), and the same applies again.
@@ -118,12 +122,14 @@ sum by (status) (increase(echonotes_exports_total[15m]))
 
 - A request's trace: the server span `POST /api/projects/{projectId}/transcriptions` (FastAPI) → `transcription.create` → SQLAlchemy spans and the manual CLIENT span `groq.transcribe` (there is no OTel instrumentation for `httpx2`). An export: `GET …/export` → `export.build`.
 - Custom span attributes are safe only: `echonotes.project_id`, `echonotes.transcript_id`, `echonotes.audio.size_bytes`, `echonotes.provider`, `echonotes.language`, `echonotes.status`, `error.type` (class name or HTTP status), counts and sizes. Failed spans have status `ERROR` and `error.type`, never the exception message. A redacting span processor removes exception messages, query strings and client details before export.
+- **AI summary (US-22):** `POST …/summaries` answers 202 and the job runs in a background task, in its own span **`summary.generate`** (one per job). Its attributes are safe only: `echonotes.project.id`, `summary.id`, `summarizer.provider`, `summarizer.model` (the model that actually answered, the fallback when used), `summary.transcript_count`, `summary.image_count`, `summary.input_chars`, `summary.output_bytes`, `summary.truncated`, `summary.duration_ms` and `summary.status` (the metric status, or `cancelled` on shutdown). Any status other than `success` sets the span status `ERROR`. The JSON logs `summary_started` / `summary_finished` carry the same IDs, counts, sizes, duration and status.
 
 ```traceql
 {resource.service.name="echonotes-api" && name="transcription.create"}
 {resource.service.name="echonotes-api" && status=error}
 {resource.service.name="echonotes-api" && span.echonotes.status=~"provider_error|timeout|server_error"}
 {resource.service.name="echonotes-api" && name="export.build" && span.echonotes.status="error"}
+{resource.service.name="echonotes-api" && name="summary.generate" && span.summary.status!="success"}
 ```
 
 ### Logs (Loki)
@@ -168,6 +174,9 @@ File `observability/dashboard.json`, uid **`echonotes-journey`**, folder *EchoNo
 | Key journey | Transcriptions (5 m) · **Transcription failure ratio (2 m), the alert input** · p95 transcription latency · Export success ratio · Transcriptions by status per minute · Failure ratio over time with the 20 % threshold and the request count · Latency p50/p95 by provider · Exports by status |
 | HTTP | Request rate by route · 5xx ratio (all endpoints) · p95 latency by route |
 | Logs and traces | Recent failure logs `WARN`/`ERROR`/`FATAL` (Loki, with trace links) · Failing traces (Tempo) · Journey traces `transcription.create` / `export.build` (Tempo) |
+| AI project summary (US-22, #60) | Summaries by provider and status (`increase(echonotes_summaries_total[5m])`, stacked) · Summary duration p50/p95 by provider (`echonotes_summary_duration_seconds`, 15 m window because jobs are rare) |
+
+Summary failures are not alerted on: the feature is an optional bonus and a free-tier Gemini quota error is expected, not an incident. The panels and the `summary.generate` traces are there for diagnosis; failed spans also show up in *Failing traces*.
 
 The dashboard links to the [runbook](runbooks/transcription-failures.md).
 
@@ -289,11 +298,12 @@ Example access line:
 
 | Allowed in logs, spans and metrics | Never allowed |
 |---|---|
-| Resource IDs (UUIDs), sizes in bytes, durations, content types, HTTP status, provider name, language code, error class or code | Transcript text or titles, filenames typed by users, audio or image bytes, `GROQ_API_KEY`, `DATABASE_URL`, request bodies |
+| Resource IDs (UUIDs), sizes in bytes, durations, content types, HTTP status, provider name, language code, error class or code | Transcript text or titles, filenames typed by users, audio or image bytes, summary prompts or generated HTML, `GROQ_API_KEY`, `GEMINI_API_KEY`, `DATABASE_URL`, request bodies |
 
 These rules cover every signal and every place it travels:
 
 - **Labels and attributes:** metric labels are low-cardinality enums (`provider`, `status`) plus resource attributes (service, version, environment, commit, instance). Span attributes and log fields are IDs, sizes, durations, status codes, provider, language and error class. Exception messages are never exported, only the class and the stack frames (code, not user data).
+- **AI summaries (US-22):** the transcripts, screenshots and the generated HTML are sent to the configured LLM and stored in the database, but they never reach telemetry. `summary.generate`, the summary metrics and the `summary_*` logs carry only IDs, counts, sizes, the truncated flag, provider, model, duration and status: never transcript text, titles, filenames, the prompt, the model output or image bytes, and never `GEMINI_API_KEY`. Provider errors are logged with the provider name, HTTP status and error class only, never the response body. Privacy tests in the backend enforce this (`tests/unit/test_summary_telemetry.py`).
 - **Alert notifications** contain only the rule's labels, the measured ratio, links and the fixed annotation text, never a log line or a trace attribute. The sample payloads in `observability/samples/` are real notifications from a synthetic run.
 - **Evidence for the responder** is read with the allowlisted queries above and scrubbed by the responder before the agent sees it ([on-call.md](on-call.md)).
 - **No secrets in the stack:** Grafana's `admin/admin` is a local-only default, Grafana listens on loopback only, and nothing in `observability/` or the lgtm service needs a key. A hosted backend's token would live only in Render/GitHub secrets.

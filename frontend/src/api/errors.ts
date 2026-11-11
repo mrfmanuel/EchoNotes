@@ -1,4 +1,5 @@
 import { ApiError, NETWORK_ERROR_STATUS } from './client'
+import type { SummaryErrorCode } from './types'
 
 const RETRY_HINT = 'Please try again in a moment.'
 
@@ -58,6 +59,31 @@ export function screenshotErrorMessage(error: unknown): string {
     if (error.status === 422) {
       return `The screenshot was rejected: ${error.firstMessage}`
     }
+  }
+  return genericErrorMessage(error)
+}
+
+/** Friendly text for a failed summary job (US-22 AC9). Never shows raw provider text. */
+export function summaryFailureMessage(code: SummaryErrorCode | null): string {
+  switch (code) {
+    case 'provider_timeout':
+      return 'The AI provider took too long. Try again.'
+    case 'provider_error':
+      return 'The AI provider failed or is busy. Try again in a minute.'
+    case 'interrupted':
+      return 'Generation was interrupted (the server restarted). Try again.'
+    default:
+      return 'The summary could not be generated because of an unexpected error. Try again.'
+  }
+}
+
+/** User-facing message when starting or checking a summary fails (US-22 AC1). */
+export function summaryRequestErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 409 && error.code === 'no_transcripts') {
+      return 'Add at least one transcript before generating a summary.'
+    }
+    if (error.status === 404) return 'This project no longer exists.'
   }
   return genericErrorMessage(error)
 }

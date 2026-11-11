@@ -22,6 +22,9 @@ export type ErrorCode =
   | 'image_too_large'
   | 'provider_error'
   | 'provider_timeout'
+  | 'no_transcripts'
+  | 'summary_not_found'
+  | 'summary_not_ready'
 
 /** FastAPI-style validation item inside a 422 `detail` list. */
 export interface ValidationIssue {
@@ -117,4 +120,31 @@ export interface TranscriptionUpload {
 export interface ScreenshotUpload {
   file: File
   transcriptId?: Uuid
+}
+
+/** `Summary.status` (US-22). `pending` and `running` are active; the others are terminal. */
+export type SummaryStatus = 'pending' | 'running' | 'succeeded' | 'failed'
+
+/** Safe `Summary.error_code` values (US-22 AC18–AC19); never raw provider text. */
+export type SummaryErrorCode = 'provider_error' | 'provider_timeout' | 'interrupted' | 'internal_error'
+
+/** `Summary` schema: an AI-generated HTML project summary job (US-22). */
+export interface Summary {
+  id: Uuid
+  project_id: Uuid
+  status: SummaryStatus
+  /** `gemini`, `groq` or `fake`. */
+  provider: string
+  /** The model that actually produced it (the fallback model when used). */
+  model: string | null
+  created_at: DateTimeString
+  started_at: DateTimeString | null
+  finished_at: DateTimeString | null
+  error_code: SummaryErrorCode | null
+  /** The content sent to the provider was capped. */
+  truncated: boolean
+  transcript_count: number
+  image_count: number
+  /** The full self-contained HTML document, only when `succeeded`. */
+  html: string | null
 }

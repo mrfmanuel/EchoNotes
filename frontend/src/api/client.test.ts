@@ -203,3 +203,49 @@ describe('API client (follows openapi.yaml)', () => {
     await expect(client.listProjects()).rejects.toMatchObject({ status: 500, detail: 'Server Error' })
   })
 })
+
+describe('API client – summaries (US-22)', () => {
+  it('startSummary POSTs /api/projects/{id}/summaries with no body and returns the Summary', async () => {
+    const { client, fetchMock } = setup(jsonResponse(202, { id: 's1', status: 'pending' }))
+
+    await expect(client.startSummary('p1')).resolves.toMatchObject({ id: 's1', status: 'pending' })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/projects/p1/summaries')
+    expect(init?.method).toBe('POST')
+    expect(init?.body).toBeUndefined()
+  })
+
+  it('startSummary surfaces 409 no_transcripts as an ApiError with its code', async () => {
+    const { client } = setup(jsonResponse(409, { detail: 'No transcripts', code: 'no_transcripts' }))
+
+    await expect(client.startSummary('p1')).rejects.toMatchObject({
+      status: 409,
+      code: 'no_transcripts',
+    })
+  })
+
+  it('getLatestSummary GETs .../summaries/latest and returns the Summary', async () => {
+    const { client, fetchMock } = setup(jsonResponse(200, { id: 's1', status: 'running' }))
+
+    await expect(client.getLatestSummary('p1')).resolves.toMatchObject({ id: 's1' })
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/projects/p1/summaries/latest')
+  })
+
+  it('getLatestSummary maps 404 summary_not_found to null', async () => {
+    const { client } = setup(jsonResponse(404, { detail: 'No summary', code: 'summary_not_found' }))
+
+    await expect(client.getLatestSummary('p1')).resolves.toBeNull()
+  })
+
+  it('getLatestSummary rethrows other errors', async () => {
+    const { client } = setup(jsonResponse(500, { detail: 'Boom' }))
+
+    await expect(client.getLatestSummary('p1')).rejects.toMatchObject({ status: 500 })
+  })
+
+  it('summaryDownloadUrl builds the download endpoint URL', () => {
+    const { client } = setup(jsonResponse(200, {}))
+
+    expect(client.summaryDownloadUrl('p1', 's1')).toBe('/api/projects/p1/summaries/s1/download')
+  })
+})

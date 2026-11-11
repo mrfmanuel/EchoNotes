@@ -47,6 +47,7 @@ Render env vars per service (values live only in Render): `DATABASE_URL` (Neon c
 | `SUMMARY_MAX_CHARS` | `60000` | total transcript characters sent; above it the content is cut and the summary says so |
 | `SUMMARY_MAX_IMAGES` | `8` | screenshots sent per summary |
 | `SUMMARY_IMAGE_MAX_PX` | `1280` | longest side after downscaling |
+| `SUMMARY_MAX_IMAGE_BYTES` | `4194304` (4 MiB) | total encoded bytes of the screenshots sent and embedded in `summary.html` (re-encoded as JPEG, PNG only when smaller); an image that would exceed it is left out and the summary is marked truncated |
 
 `docker-compose.yml` passes these through with the same defaults as `backend/app/config.py` (never an empty string for a model or a number, which would override the app default or fail validation). `.env.example` lists them with comments and no values for secrets.
 

@@ -72,6 +72,7 @@ services:
       SUMMARY_MAX_CHARS: ${SUMMARY_MAX_CHARS:-60000}
       SUMMARY_MAX_IMAGES: ${SUMMARY_MAX_IMAGES:-8}
       SUMMARY_IMAGE_MAX_PX: ${SUMMARY_IMAGE_MAX_PX:-1280}
+      SUMMARY_MAX_IMAGE_BYTES: ${SUMMARY_MAX_IMAGE_BYTES:-4194304}
       # Telemetry is off unless `make obs-up` sets OBS_OTLP_ENDPOINT=http://lgtm:4318. A dedicated
       # variable (not OTEL_EXPORTER_OTLP_ENDPOINT) so a host-dev value in .env cannot leak in here.
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OBS_OTLP_ENDPOINT:-}

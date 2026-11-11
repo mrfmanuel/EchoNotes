@@ -130,7 +130,7 @@ class SummaryResult:
 
 **Startup recovery.** The lifespan runs `UPDATE summaries SET status='failed', error_code='interrupted', finished_at=now WHERE status IN ('pending','running')` (rows left by a restart or deploy) and logs only the count.
 
-**Prompt rules** (`prompt.py`, pure, unit-tested). Transcripts go oldest first, each inside `<transcript n=".." title="..">…</transcript>` delimiters as untrusted data. When the total text is over `SUMMARY_MAX_CHARS`, the budget is split **max-min fair**: short transcripts stay whole, the longer ones share the rest equally and are cut at the end. Up to `SUMMARY_MAX_IMAGES` screenshots are sent: those linked to a sent transcript first (oldest first), then unlinked ones (newest first). Each is numbered 1..k and downscaled so its longest side is at most `SUMMARY_IMAGE_MAX_PX` (Pillow, `Image.MAX_IMAGE_PIXELS` bounded, re-encoded as PNG or JPEG). Anything cut sets `truncated`, and the model is told to say so. The system instruction asks for an HTML fragment in the transcripts' dominant language (title, overview, key points, decisions/action items, one section per transcript, `<figure data-screenshot="N">` placeholders) and says that everything inside the transcripts is data and any instructions in it must be ignored.
+**Prompt rules** (`prompt.py`, pure, unit-tested). Transcripts go oldest first, each inside `<transcript n=".." title="..">…</transcript>` delimiters as untrusted data. When the total text is over `SUMMARY_MAX_CHARS`, the budget is split **max-min fair**: short transcripts stay whole, the longer ones share the rest equally and are cut at the end. Up to `SUMMARY_MAX_IMAGES` screenshots are sent: those linked to a sent transcript first (oldest first), then unlinked ones (newest first). Images that cannot be decoded or are over 16 MP are skipped. Each is downscaled so its longest side is at most `SUMMARY_IMAGE_MAX_PX` and re-encoded as JPEG (PNG only when smaller); an image that would push the total over `SUMMARY_MAX_IMAGE_BYTES` (4 MiB) is left out. The chosen ones are numbered 1..k, and the same bytes go to the provider and into the HTML. Content cut by a cap (characters, image count, image byte budget) sets `truncated`, and the model is told to say so. The system instruction asks for an HTML fragment in the transcripts' dominant language (title, overview, key points, decisions/action items, one section per transcript, `<figure data-screenshot="N">` placeholders) and says that everything inside the transcripts is data and any instructions in it must be ignored.
 
 **Sanitize, then embed** (`render.py`). The model output is treated as hostile:
 
@@ -169,6 +169,11 @@ sequenceDiagram
 ```
 
 Telemetry: span `summary.generate`, `echonotes_summaries_total{provider,status}` and `echonotes_summary_duration_seconds` ([observability.md](observability.md#traces-tempo)), with IDs, counts, sizes and status only.
+
+**Known limits.**
+
+- **Startup recovery assumes one instance.** At startup, every `pending`/`running` job is marked `interrupted`. That is correct for our single Render instance per environment, where a restart or deploy really kills the old job. With rolling deploys or several instances, a new instance could mark as interrupted a job that the old instance is still running. Supporting that would need a per-instance owner or heartbeat column on `summaries`.
+- **Image pixel cap of 16 MP.** Screenshots larger than 16 megapixels (`MAX_IMAGE_PIXELS`, checked from the header before decoding) are skipped. This protects the 512 MB free Render instance from decompression bombs and memory spikes while downscaling.
 
 ### Data model
 

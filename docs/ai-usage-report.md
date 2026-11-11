@@ -108,5 +108,56 @@ How AI tools were used to build EchoNotes, what the agents did, and what a human
 - The downloaded `.md`/`.txt` files and the ZIP, opened in a real notes app or file manager.
 - The layout on a real phone and in dark mode.
 
-## P3 — Deploy and CI/CD *(planned)*
+## P3 — Deploy and CI/CD (2026-11-10/11)
+
+- **Prompt:** [`prompts/P3-deploy-cicd.md`](../prompts/P3-deploy-cicd.md)
+- **Summary:** milestone M3, from groomed issues to live dev and prod with automatic CD to dev, gated promotion to prod, automatic and manual rollback, all proven with real runs. The human did the account work beforehand: a Neon project with `production` and `development` branches, two Render Docker services with auto-deploy off, and a git-ignored `.env.deploy`. The tech lead did the GitHub configuration with `gh`. Subagents wrote all code and workflows.
+
+### How the session was orchestrated
+- **Checked before building:**
+  - **Configuration first, done by the tech lead:** it checked that `.env.deploy` is git-ignored, then loaded the two deploy-hook secrets and the `DEV_URL`/`PROD_URL` variables. Values were piped into `gh secret set` and never printed. It created the `development` and `production` environments (production with required reviewer `mrfmanuel`) and protected `main` with the three CI jobs as required checks, not enforced for admins.
+  - **Platform facts checked against the docs:** a `web-fetch` agent read Render's documentation. It confirmed deploy hooks accept `ref=<sha>` (200 = started, 202 = busy, 404 = unknown SHA) and that `RENDER_GIT_COMMIT` is available at runtime. Both facts went into the engineers' briefs.
+  - **Baseline:** before any change, `scripts/smoke.sh` passed against the already running dev service with the real Groq provider.
+- **Parallel PRs in isolated worktrees:** the health/version PR (`software-engineer`) and the CD PR (`devops-sre`) were built at the same time. The CD PR depended only on the field names agreed in the groomed issue (`commit`, `environment`, `SMOKE_EXPECT_COMMIT`), and #47 merged first.
+- **Live proof by the tech lead** after merging: the automatic dev deploy, the prod promotion with the human approving in GitHub, the dev rollback demo and redeploy, and a real Groq transcription on prod.
+
+### What each agent did
+
+| Agent | Work |
+|---|---|
+| `product-manager` | Tightened the ACs of #25–#28 to match the prompt. Created **#47** (commit and environment in `/api/health` and the UI footer) and **#48** (branch protection). Set the delivery order. Updated US-17 in the spec |
+| `software-engineer` | PR #50: `commit`/`environment` in health (`RENDER_GIT_COMMIT` → `GIT_SHA` → `unknown`), `GIT_SHA` in the image, openapi + contract test, UI footer, `SMOKE_EXPECT_COMMIT`, `smoke-test-*` project names with cleanup checked on a forced failure |
+| `devops-sre` | PR #49: `scripts/deploy.sh` (hook with `ref`, 202 backoff, health polling until the commit matches, smoke, job summary, hook URL kept off curl's arguments and masked) and `scripts/resolve-commit.sh`. The `deploy-dev`, `deploy-prod` and `rollback` workflows. Mock tests (27 cases), shellcheck and actionlint clean |
+| `qa-engineer` | 3 runs: #49 APPROVED with follow-ups; #50 CHANGES REQUESTED, then APPROVED on re-check |
+| `web-fetch` | Read the Render docs (deploy hooks, env vars, rollbacks) |
+
+### Pull requests and issues
+
+| PR | Issues | Content |
+|---|---|---|
+| [#50](https://github.com/mrfmanuel/EchoNotes/pull/50) | #47 | Deployed commit and environment in `/api/health` and the UI footer; smoke checks the commit |
+| [#49](https://github.com/mrfmanuel/EchoNotes/pull/49) | #25 #26 #27 | CD: auto dev, gated prod with auto-rollback, rollback workflow, shared `deploy.sh` |
+| docs commits on `main` | #48 #28 | Branch protection recorded in `process.md`; deployment, release process, README, AGENTS.md |
+
+### Problems found by QA and by the process
+- **#50, CHANGES REQUESTED:** `docker-compose.yml` set `GIT_SHA` at runtime, which replaced the commit baked into the image, so CI's health check reported `commit=unknown`. The fix left `GIT_SHA` as a build arg only and commented it out in `.env.example`, with a test to keep it that way. The smoke script's mismatch message now prints full SHAs.
+- **#49 follow-ups applied before merge:**
+  - Concurrency was set at workflow level, so a deploy-dev run created by a failed CI could replace a pending good deploy. It was moved to job level.
+  - The `development` environment is now limited to protected branches, so only runs on `main` can use the dev hook.
+- **Seen live:** merging #50 and #49 back to back cancelled the CI run for #50 on `main`. The deploy-dev run it created skipped its job as designed, and the next green CI deployed.
+- **Rate limit:** a usage-limit interruption stopped the #47 engineer partway through; it was resumed from its saved state.
+- **Decision recorded in AGENTS.md:** the post-deploy smoke test uses the deployed service's Groq provider with a 1 s silent clip, one call per deploy. CI test jobs still never call Groq, and CI never holds the key.
+
+### Tech-lead verification (live)
+- **Automatic dev deploy:** CI on `main` for `ebdef98`, then `deploy-dev` started on its own via `workflow_run`. The hook returned 200, health reported the commit after 61 s, and the smoke test passed.
+- **Prod promotion:** `deploy-prod` waited in `production` until the human approved. Prod reported `ebdef98`/`prod` after 63 s and the smoke test passed (its project was deleted).
+- **Rollback demo:** dev was rolled back to `875b2f8` (46 s, smoke passed), then redeployed to `ebdef98`.
+- **Real Groq on prod:** a 9.5 s English clip returned 201 in 1.5 s with an accurate transcript, and the project was deleted (prod has 0 projects).
+- **Secrets:** no hook key appears in any run log (`key=` occurs 0 times).
+- **Run links:** [release-process.md](release-process.md#evidence-real-runs-2026-11-1011).
+
+### What a human must still verify
+- Open the live demo in a browser: check the footer shows `v0.1.0 · ebdef98 · prod`, and record a short clip with the microphone over HTTPS.
+- Optionally try a Render dashboard rollback once to see it.
+
 ## P4 — Observability and on-call *(planned)*

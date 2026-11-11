@@ -16,8 +16,8 @@ Instructions for every AI coding agent (and human) working in this repo. Keep th
 | Issues, branches, commits, PRs, definition of done | [docs/process.md](docs/process.md) |
 | Components, data model, Transcriber interface | [docs/architecture.md](docs/architecture.md) |
 | Test pyramid and commands | [docs/testing.md](docs/testing.md) |
-| Environments and Render (planned P3) | [docs/deployment.md](docs/deployment.md) |
-| Dev → prod promotion and rollback (planned P3) | [docs/release-process.md](docs/release-process.md) |
+| Environments (Render + Neon), secrets, setup | [docs/deployment.md](docs/deployment.md) |
+| Dev → prod promotion, approval gate, rollback | [docs/release-process.md](docs/release-process.md) |
 | Telemetry, alerts, on-call (planned P4) and privacy rules | [docs/observability.md](docs/observability.md) |
 | How AI was used to build this | [docs/ai-usage-report.md](docs/ai-usage-report.md) |
 
@@ -57,8 +57,13 @@ npm run lint && npm run typecheck
 npm test
 npm run build
 
-# whole system (planned in P2)
+# whole system
 docker compose up --build
+make test                       # unit + integration (throwaway Postgres) + frontend
+
+# deploy (GitHub Actions; see docs/release-process.md)
+gh workflow run deploy-prod.yml # promote dev's commit to prod (needs approval)
+gh workflow run rollback.yml -f environment=prod -f ref=<sha>
 ```
 
 ## Coding conventions
@@ -86,5 +91,6 @@ Every acceptance criterion has evidence. Tests are written with the code and pas
 - **Never log or send to telemetry** transcript text, titles, user filenames, audio bytes, image bytes, API keys or connection strings. Log IDs, sizes, durations, status codes and provider names only.
 - **Never persist raw audio.** Process it in memory or a temp file and discard it in `finally`.
 - Validate uploads by size and content type (images by magic bytes).
-- Tests and CI never call the real Groq API. Use `TRANSCRIBER_PROVIDER=fake`.
+- Tests and CI never call the real Groq API. Use `TRANSCRIBER_PROVIDER=fake`. (The post-deploy smoke test against dev/prod uses the deployed service's own Groq provider with a 1 s silent clip; CI never holds the Groq key.)
+- Never print deploy hooks, database URLs or `.env*` values. Deploy hooks are GitHub secrets.
 - Don't run destructive git commands (`push --force` to `main`, history rewrites) without explicit human approval.

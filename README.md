@@ -1,12 +1,19 @@
 # EchoNotes 🎙️→📝
 
 [![CI](https://github.com/mrfmanuel/EchoNotes/actions/workflows/ci.yml/badge.svg)](https://github.com/mrfmanuel/EchoNotes/actions/workflows/ci.yml)
+[![Deploy dev](https://github.com/mrfmanuel/EchoNotes/actions/workflows/deploy-dev.yml/badge.svg)](https://github.com/mrfmanuel/EchoNotes/actions/workflows/deploy-dev.yml)
+[![Deploy prod](https://github.com/mrfmanuel/EchoNotes/actions/workflows/deploy-prod.yml/badge.svg)](https://github.com/mrfmanuel/EchoNotes/actions/workflows/deploy-prod.yml)
+
+> ### 🚀 Live demo: **<https://echonotes-prod.onrender.com>**
+> Dev (latest `main`): <https://echonotes-dev.onrender.com> · Health: [`/api/health`](https://echonotes-prod.onrender.com/api/health) shows the deployed commit.
+>
+> ⚠️ **The demo has no login. Anyone with the link can see every project, so do not upload sensitive or personal audio.** Free hosting sleeps after 15 min idle; the first request can take ~30–60 s.
 
 **Turn audio into organized text notes.** Drop or record audio inside a project, get a transcript in seconds, attach the screenshots that belong with it, and export everything as a clean folder of Markdown and images.
 
 Final project for the [AI Dev Tools Zoomcamp 2026](https://courses.datatalks.club/ai-dev-tools-2026/). Built with a team of AI agents (Claude Code subagents) working through a [public issue tracker](https://github.com/mrfmanuel/EchoNotes/issues).
 
-> **Status (end of prompt P2 — app):** the full application works end to end: projects, upload/record → transcript (Groq Whisper or a fake provider), edit/copy/download, screenshots (picker + Ctrl+V), ZIP export. It runs with **one command** (`docker compose up --build`), has **unit + integration + frontend tests behind one command** (`make test`) and CI on every PR. Deployment arrives in **P3** and observability/on-call in **P4**; those items are marked *planned* below.
+> **Status (end of prompt P3 — deploy & CI/CD):** the full application works end to end and is **deployed on Render** (dev + prod, each with its own Neon Postgres). CI runs on every PR; a green CI on `main` **deploys dev automatically**; **prod is promoted manually behind an approval gate** with automatic rollback; a manual rollback workflow is tested. Observability and on-call arrive in **P4** (marked *planned* below).
 
 ---
 
@@ -31,7 +38,7 @@ See the personas in the [product spec](docs/product-spec.md#2-personas).
 | Transcripts | View, edit title and text, **copy to clipboard**, **download `.md` / `.txt`**, delete | [US-08–11](docs/product-spec.md#us-08) |
 | Screenshots | Attach png / jpg / webp (≤ 5 MB) with the file picker **or Ctrl+V paste**, link one to a transcript, thumbnail gallery, delete | [US-12–15](docs/product-spec.md#33-screenshots) |
 | Export | Download a project as a ZIP: `<slug>/README.md`, `transcripts/*.md` and `*.txt`, `screenshots/*` | [US-16](docs/product-spec.md#us-16) |
-| Health | `GET /api/health` → status, version, database | [US-17](docs/product-spec.md#us-17) |
+| Health | `GET /api/health` → status, version, database, deployed commit, environment (also in the UI footer) | [US-17](docs/product-spec.md#us-17) |
 
 ## Expected behavior
 
@@ -83,6 +90,20 @@ sequenceDiagram
 
 In production, one Docker image serves both the API and the built SPA. Images are stored in Postgres because the hosting disk (Render) is ephemeral. Details: [docs/architecture.md](docs/architecture.md).
 
+### Deployment and CI/CD (short)
+
+```mermaid
+flowchart LR
+    PR[PR] --> CI{CI}
+    CI -->|green + QA approved| M[main]
+    M --> CI2{CI on main}
+    CI2 -->|green| DD[deploy-dev<br/>automatic] --> DEV[Render dev<br/>Neon development]
+    DEV -->|human runs deploy-prod<br/>+ approves| DP[deploy-prod] --> PROD[Render prod<br/>Neon production]
+    DP -.->|verify or smoke fails| RB[auto-rollback to previous commit]
+```
+
+Every deploy targets an exact commit, waits until `/api/health` reports it, then runs the smoke test. Rollback: `gh workflow run rollback.yml -f environment=prod -f ref=<sha>` or Render's dashboard. Details: [docs/deployment.md](docs/deployment.md) and [docs/release-process.md](docs/release-process.md) (with links to real runs).
+
 ## Run locally
 
 | Way | Command | Status |
@@ -114,8 +135,8 @@ One command for backend unit + integration (throwaway Postgres on port 55432) + 
 | [docs/process.md](docs/process.md) | Issues, labels, branches, commits, PRs, definition of done |
 | [docs/architecture.md](docs/architecture.md) | Components, data model, Transcriber interface |
 | [docs/testing.md](docs/testing.md) | Test pyramid, suites, counts and commands |
-| [docs/deployment.md](docs/deployment.md) | Environments and Render (*planned P3*) |
-| [docs/release-process.md](docs/release-process.md) | Dev → prod promotion and rollback (*planned P3*) |
+| [docs/deployment.md](docs/deployment.md) | Architecture, environments (Render + Neon), secrets, setup, free-tier caveats, migrations |
+| [docs/release-process.md](docs/release-process.md) | Dev → prod promotion, approval gate, rollback, evidence runs |
 | [docs/observability.md](docs/observability.md) | Telemetry, alerts, on-call (*planned P4*) and privacy rules |
 | [docs/ai-usage-report.md](docs/ai-usage-report.md) | How AI tools and agents were used |
 | [prompts/](prompts/) | The prompts given to Claude Code |
@@ -126,13 +147,13 @@ One command for backend unit + integration (throwaway Postgres on port 55432) + 
 |---|---|---|
 | Problem description | This README: [problem](#the-problem), [functionality](#functionality), [expected behavior](#expected-behavior) | ✅ P1 |
 | Product specification | [docs/product-spec.md](docs/product-spec.md) + [openapi.yaml](openapi.yaml); public tracker: [Issues](https://github.com/mrfmanuel/EchoNotes/issues), [Milestones](https://github.com/mrfmanuel/EchoNotes/milestones), [Project board](https://github.com/users/mrfmanuel/projects/2). Every issue has an AC checklist; closed issues carry evidence comments and PR links | ✅ P1 |
-| Agent team specification | [.claude/agents/](.claude/agents/) + [docs/agent-team.md](docs/agent-team.md); in P2 every PR (#36–#46) went PM grooming → software-engineer/devops-sre → qa-engineer report → merge ([AI usage report](docs/ai-usage-report.md#p2--build-the-app-2026-11-10)) | ✅ P1–P2 |
+| Agent team specification | [.claude/agents/](.claude/agents/) + [docs/agent-team.md](docs/agent-team.md); in P2 and P3 every PR (#36–#50) went PM grooming → software-engineer/devops-sre → qa-engineer report → merge ([AI usage report](docs/ai-usage-report.md#p2--build-the-app-2026-11-10)) | ✅ P1–P3 |
 | Context management | [AGENTS.md](AGENTS.md) → modular docs ([process](docs/process.md), [agent team](docs/agent-team.md), [architecture](docs/architecture.md), …); [CLAUDE.md](CLAUDE.md) imports it | ✅ P1 |
 | Application | FastAPI + React SPA + Postgres end to end; the frontend calls a typed `/api` client, data persists in Postgres; `docker compose up --build` → <http://localhost:8000> ([M2](https://github.com/mrfmanuel/EchoNotes/milestone/2), [screenshots](#screenshots)) | ✅ P2 |
-| Testing | 387 backend unit + 38 integration (real Postgres) + 129 frontend tests, contract test vs `openapi.yaml`, privacy log test, smoke script; **one command: `make test`**; all run in CI ([docs/testing.md](docs/testing.md)) | ✅ P2 |
+| Testing | 408 backend unit + 38 integration (real Postgres) + 136 frontend tests, contract test vs `openapi.yaml`, privacy log test, smoke script; **one command: `make test`**; all run in CI ([docs/testing.md](docs/testing.md)) | ✅ P2 |
 | Containerization | Multi-stage [Dockerfile](Dockerfile) (SPA + API in one non-root image, migrations on start, HEALTHCHECK) + [docker-compose.yml](docker-compose.yml) with Postgres 16; one command, no `.env` needed; CI builds the image and smoke-tests it ([#22](https://github.com/mrfmanuel/EchoNotes/issues/22)) | ✅ P2 |
-| Deployment | Render dev + prod public URLs ([docs/deployment.md](docs/deployment.md)) | *planned P3* |
-| CI/CD | [CI on every PR and push](.github/workflows/ci.yml): lint, typecheck, unit + integration (Postgres service), frontend, Docker build + compose smoke ✅; CD to dev, manual prod and rollback *planned P3* | CI ✅ P1–P2 |
+| Deployment | **Live:** prod <https://echonotes-prod.onrender.com>, dev <https://echonotes-dev.onrender.com> (Render Docker services + Neon Postgres per environment; `/api/health` shows the deployed commit) ([docs/deployment.md](docs/deployment.md)) | ✅ P3 |
+| CI/CD | [CI](.github/workflows/ci.yml) on every PR (required checks on `main`): lint, typecheck, unit + integration, frontend, Docker build + smoke. CD: [deploy-dev](.github/workflows/deploy-dev.yml) **automatic** after CI on `main`; [deploy-prod](.github/workflows/deploy-prod.yml) **manual with approval gate** and auto-rollback; [rollback](.github/workflows/rollback.yml) tested on dev. Real runs: [release-process.md#evidence](docs/release-process.md#evidence-real-runs-2026-11-1011) | ✅ P3 |
 | Observability | OpenTelemetry traces, metrics and logs sharing a trace ID, viewable in a UI ([docs/observability.md](docs/observability.md)) | *planned P4* |
 | Alerting on user impact | Transcription failure-rate alert with runbook | *planned P4* ([#31](https://github.com/mrfmanuel/EchoNotes/issues/31)) |
 | On-call agent | Alert → responder agent → incident issue and fix PR | *planned P4* ([#32](https://github.com/mrfmanuel/EchoNotes/issues/32)) |

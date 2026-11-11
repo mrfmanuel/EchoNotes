@@ -1,14 +1,66 @@
 # Deployment
 
-> Status: **planned in P3 (M3 Deploy & CI/CD).** Nothing is deployed yet.
+> Status: **live since P3 (M3 Deploy & CI/CD, 2026-11-10).** Prod: <https://echonotes-prod.onrender.com> · Dev: <https://echonotes-dev.onrender.com>
 
-## Target
+## Architecture
 
-| Environment | Where | Trigger | Database |
-|---|---|---|---|
-| local | `docker compose up --build` | manual | Postgres container |
-| dev | Render web service `echonotes-dev` (Docker) | automatic on every merge to `main` | Render Postgres (or Neon) `echonotes-dev` |
-| prod | Render web service `echonotes-prod` (Docker) | **manual** GitHub Actions workflow (`workflow_dispatch`) promoting a tested commit SHA | separate Postgres `echonotes-prod` |
+```mermaid
+flowchart LR
+    dev[Developer / agents] -->|PR| gh[GitHub repo]
+    gh -->|pull_request + push| ci[Actions: CI<br/>backend · frontend · docker]
+    ci -->|success on main<br/>workflow_run| dd[Actions: deploy-dev]
+    human[Human reviewer] -->|approve `production`| dp[Actions: deploy-prod<br/>workflow_dispatch]
+    dd -->|deploy hook ?ref=sha| rdev[Render: echonotes-dev<br/>Docker web service]
+    dp -->|deploy hook ?ref=sha| rprod[Render: echonotes-prod<br/>Docker web service]
+    rdev -->|DATABASE_URL| ndev[(Neon: development branch)]
+    rprod -->|DATABASE_URL| nprod[(Neon: production branch)]
+    rdev & rprod -->|transcription| groq[Groq Whisper API]
+    dd -.->|poll /api/health + smoke.sh| rdev
+    dp -.->|poll /api/health + smoke.sh| rprod
+```
+
+Render builds the image itself from the repo's root `Dockerfile` at the requested commit. GitHub Actions never builds or pushes the deployed image and never holds the database URLs or the Groq key: it only calls the deploy hooks and checks the public URLs.
+
+## Environments
+
+| Environment | URL | Render service | Database (Neon branch) | Transcriber | Deploy |
+|---|---|---|---|---|---|
+| local | <http://localhost:8000> | — (`docker compose up --build`) | Postgres 16 container | `fake` (default) | manual |
+| dev | <https://echonotes-dev.onrender.com> | `echonotes-dev` (free) | `development` | `groq` | **automatic** after CI passes on `main` (`deploy-dev.yml`) |
+| prod | <https://echonotes-prod.onrender.com> | `echonotes-prod` (free) | `production` | `groq` | **manual** promotion with approval (`deploy-prod.yml`, environment `production`) |
+
+Render env vars per service (values live only in Render): `DATABASE_URL` (Neon connection string, `postgresql+psycopg://…?sslmode=require`), `APP_ENV` (`dev` / `prod`), `TRANSCRIBER_PROVIDER=groq`, `GROQ_API_KEY`. Render itself sets `PORT` and `RENDER_GIT_COMMIT`.
+
+### GitHub secrets and variables (names only)
+
+| Name | Kind | Used by |
+|---|---|---|
+| `RENDER_DEV_DEPLOY_HOOK` | repo secret | `deploy-dev.yml`, `rollback.yml` (dev) |
+| `RENDER_PROD_DEPLOY_HOOK` | repo secret | `deploy-prod.yml`, `rollback.yml` (prod) |
+| `DEV_URL` | repo variable | all deploy workflows (health, smoke, default prod ref) |
+| `PROD_URL` | repo variable | `deploy-prod.yml`, `rollback.yml` |
+
+GitHub environments: `development` (protected branches only) and `production` (required reviewer `mrfmanuel`, protected branches only). `main` is protected: the three CI jobs are required checks ([process.md](process.md#branch-protection-on-main-since-m3-48)).
+
+### First-time setup (done once, manually by the human)
+
+1. **Neon:** create project `echonotes` with two branches, `production` and `development` (separate databases, same schema history). Copy each branch's connection string and change the scheme to `postgresql+psycopg://`. Tables are created by Alembic on the first deploy; nothing is created by hand.
+2. **Render:** create two **Web Services → Docker** from this repo, branch `main`, root `Dockerfile`, plan Free: `echonotes-dev` and `echonotes-prod`. Health check path `/api/health`. **Auto-Deploy: Off** (GitHub Actions decides what is deployed). Set the env vars above. Copy each service's **Deploy Hook** URL (Settings → Deploy Hook).
+3. **Local file `.env.deploy`** (git-ignored by `.env.*`): `RENDER_DEV_DEPLOY_HOOK`, `RENDER_PROD_DEPLOY_HOOK`, `DEV_URL`, `PROD_URL`.
+4. **GitHub (done by the tech lead agent with `gh`, P3):** secrets and variables loaded from `.env.deploy` without echoing (`… | gh secret set NAME`), environments created with `gh api -X PUT repos/<owner>/<repo>/environments/<name>`, branch protection with `gh api -X PUT …/branches/main/protection`.
+
+### Free-tier caveats
+
+- Free Render services **spin down after 15 minutes without traffic**; the next request cold-starts the container (~30–60 s; we measured ~34 s). The UI simply loads slowly the first time. `smoke.sh` and `deploy.sh` retry health for this reason.
+- A deploy (Docker build on Render + start) took **46–63 s** in the P3 runs; `deploy.sh` allows 15 min.
+- Neon free branches also suspend when idle; the first query after a pause adds a little latency. The health check's 2 s DB timeout has been enough so far.
+- One Groq call (1 s silent clip) per deploy from the smoke test.
+
+### Database migrations on deploy
+
+The container entrypoint runs `alembic upgrade head` against the environment's Neon branch **before** uvicorn starts. If a migration fails, the container exits, Render's health check never passes, Render keeps the previous instance serving, and `deploy.sh` fails at "verify commit" (prod then rolls back automatically). Migrations must therefore be **backward compatible** (expand → migrate → contract), so that the previous app version still runs on the new schema after a rollback. Dev and prod migrate independently, each on its own deploy.
+
+## Shared runtime notes
 
 - A single image serves the FastAPI API and the built React SPA.
 - Configuration comes from env vars only (`DATABASE_URL`, `TRANSCRIBER_PROVIDER`, `GROQ_API_KEY`, …). See `.env.example`.
@@ -64,10 +116,4 @@ scripts/resolve-commit.sh health <base-url>         # commit running there, or "
 
 `deploy.sh`: triggers the Render deploy hook with `&ref=<sha>` (200 = started, 202 = another deploy in progress → retried with backoff up to `DEPLOY_HOOK_WAIT`=600 s, anything else fails), polls `/api/health` every 15 s until `commit == sha` (`DEPLOY_TIMEOUT`=900 s, 5xx/timeouts tolerated) and `environment` matches, then runs `SMOKE_ALLOW_EMPTY_TEXT=1 SMOKE_EXPECT_COMMIT=<sha> scripts/smoke.sh <base-url>`. It writes a job summary (env, URL, target, commit running before, deploy id, result, durations). The hook URL comes only from `DEPLOY_HOOK_URL`, is never printed and is masked in Actions. Smoke on dev/prod uses the service's real provider (Groq) with the 1 s silent clip: one Groq call per deploy, made by the service itself; CI never holds the Groq key.
 
-Secrets / variables used (names only): `RENDER_DEV_DEPLOY_HOOK`, `RENDER_PROD_DEPLOY_HOOK` (repo secrets); `DEV_URL`, `PROD_URL` (repo variables). Tests: `bash scripts/tests/test_deploy.sh` ([testing.md](testing.md#deploy-script-tests-scriptsdeploysh-25-26-27)).
-
-## To be documented in P3
-
-- Render service and DB setup steps (including the manual steps for the human)
-- GitHub secrets (`RENDER_API_KEY`, deploy hooks, service IDs)
-- Public URLs for dev and prod
+Secrets / variables used: see [the table above](#github-secrets-and-variables-names-only). Tests: `bash scripts/tests/test_deploy.sh` ([testing.md](testing.md#deploy-script-tests-scriptsdeploysh-25-26-27)). Confirmed on the first live runs: the hook answers **200** with a deploy id, `RENDER_GIT_COMMIT` is the full 40-char SHA. The release flow, rollback and evidence are in [release-process.md](release-process.md).

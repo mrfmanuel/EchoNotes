@@ -49,7 +49,7 @@ Applied with `gh api -X PUT repos/mrfmanuel/EchoNotes/branches/main/protection`:
 
 | Setting | Value |
 |---|---|
-| Required status checks (PRs cannot merge until they pass) | `Backend (ruff + pytest unit + integration)`, `Frontend (lint + typecheck + test + build)`, `Docker (build image + boot with compose + smoke test)` |
+| Required status checks (PRs cannot merge until they pass) | `Backend (ruff + pytest unit + integration)`, `Frontend (lint + typecheck + test + build)`, `Docker (build image + boot with compose + smoke test)`, `On-call responder (ruff + tests with a stub agent)` (added in M4, #33) |
 | Require branch up to date (`strict`) | off (squash-merge after a green run is enough; avoids needless re-runs) |
 | Enforce for admins | **off**, so the tech lead can push the docs-only commits allowed above. GitHub reports these pushes as "Bypassed rule violations" |
 | Force pushes / branch deletion | blocked |

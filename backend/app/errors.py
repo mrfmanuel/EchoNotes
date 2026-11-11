@@ -16,6 +16,9 @@ ErrorCode = Literal[
     "image_too_large",
     "provider_error",
     "provider_timeout",
+    "no_transcripts",
+    "summary_not_found",
+    "summary_not_ready",
 ]
 
 

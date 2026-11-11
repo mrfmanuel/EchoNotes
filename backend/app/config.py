@@ -8,6 +8,8 @@ from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+# Empty = auto: `gemini` when GEMINI_API_KEY is set, otherwise `fake` (US-22 AC21).
+SummarizerProvider = Literal["", "gemini", "groq", "fake"]
 
 DEFAULT_DATABASE_URL = "postgresql+psycopg://echonotes:echonotes@localhost:5432/echonotes"
 
@@ -46,6 +48,19 @@ class Settings(BaseSettings):
     transcribe_timeout_seconds: float = Field(default=120, gt=0)
     max_audio_mb: int = Field(default=25, gt=0)
     max_image_mb: int = Field(default=5, gt=0)
+    # AI project summary (US-22). Safe defaults: no new variable is required anywhere.
+    summarizer_provider: SummarizerProvider = ""
+    gemini_api_key: SecretStr = SecretStr("")
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    gemini_model: str = "gemini-3.8-flash"
+    gemini_fallback_model: str = "gemini-3.5-flash-lite"  # empty = no fallback on 429
+    groq_summary_model: str = "openai/gpt-oss-120b"
+    summary_timeout_seconds: float = Field(default=90, gt=0)  # the whole job, fallback included
+    summary_max_chars: int = Field(default=60000, gt=0)  # total across all transcripts
+    summary_max_images: int = Field(default=8, ge=0)
+    summary_image_max_px: int = Field(default=1280, gt=0)  # longest side after downscaling
+    # Total encoded bytes of the images sent and embedded (keeps summary.html small).
+    summary_max_image_bytes: int = Field(default=4 * 1024 * 1024, gt=0)
     # Built SPA (frontend/dist) served by FastAPI. Unset/empty = API only (dev, tests).
     static_dir: Path | None = None
     # Deployed commit (US-17 AC3): set by Render at runtime, or by the Docker `GIT_SHA` build arg.
@@ -61,6 +76,11 @@ class Settings(BaseSettings):
     @classmethod
     def _upper_log_level(cls, value: object) -> object:
         return value.upper() if isinstance(value, str) else value
+
+    @field_validator("summarizer_provider", mode="before")
+    @classmethod
+    def _normalize_summarizer_provider(cls, value: object) -> object:
+        return value.strip().lower() if isinstance(value, str) else value
 
     @field_validator("static_dir", mode="before")
     @classmethod

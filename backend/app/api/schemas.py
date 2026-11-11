@@ -2,12 +2,13 @@
 
 import uuid
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
 
 from app.db.models import PROJECT_NAME_MAX, TRANSCRIPT_TITLE_MAX
 from app.db.models import Screenshot as ScreenshotRow
+from app.db.models import Summary as SummaryRow
 
 ProjectName = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=PROJECT_NAME_MAX)
@@ -97,6 +98,46 @@ class ScreenshotUpdate(BaseModel):
 class ProjectDetail(Project):
     transcripts: list[TranscriptSummary]
     screenshots: list[Screenshot]
+
+
+SummaryStatus = Literal["pending", "running", "succeeded", "failed"]
+SummaryErrorCode = Literal["provider_error", "provider_timeout", "interrupted", "internal_error"]
+
+
+class Summary(BaseModel):
+    """AI project summary (US-22 AC2). `html` is only set when `status` is `succeeded`."""
+
+    id: uuid.UUID
+    project_id: uuid.UUID
+    status: SummaryStatus
+    provider: str
+    model: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    error_code: SummaryErrorCode | None
+    truncated: bool
+    transcript_count: int
+    image_count: int
+    html: str | None
+
+
+def to_summary(row: SummaryRow) -> Summary:
+    return Summary(
+        id=row.id,
+        project_id=row.project_id,
+        status=cast(SummaryStatus, row.status),
+        provider=row.provider,
+        model=row.model,
+        created_at=row.created_at,
+        started_at=row.started_at,
+        finished_at=row.finished_at,
+        error_code=cast(SummaryErrorCode | None, row.error_code),
+        truncated=row.truncated,
+        transcript_count=row.transcript_count,
+        image_count=row.image_count,
+        html=row.html if row.status == "succeeded" else None,
+    )
 
 
 def screenshot_image_url(screenshot_id: uuid.UUID) -> str:

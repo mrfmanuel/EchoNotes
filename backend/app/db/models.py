@@ -3,7 +3,18 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Integer, LargeBinary, String, Text, Uuid, func
+from sqlalchemy import (
+    Boolean,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    Uuid,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, UTCDateTime, utcnow
@@ -11,6 +22,8 @@ from app.db.base import Base, UTCDateTime, utcnow
 PROJECT_NAME_MAX = 100
 TRANSCRIPT_TITLE_MAX = 200
 SLUG_MAX = 220
+# Summary statuses that block a new job (one active job per project, US-22 AC4).
+ACTIVE_SUMMARY_WHERE = "status IN ('pending', 'running')"
 
 
 def _created_at() -> Mapped[datetime]:
@@ -80,3 +93,35 @@ class Screenshot(Base):
 
     project: Mapped[Project] = relationship(back_populates="screenshots")
     transcript: Mapped[Transcript | None] = relationship(back_populates="screenshots")
+
+
+class Summary(Base):
+    """An AI project summary job and, once `succeeded`, its sanitized HTML (US-22)."""
+
+    __tablename__ = "summaries"
+    __table_args__ = (
+        # At most one pending/running job per project, even under concurrent POSTs.
+        Index(
+            "uq_summaries_active_project",
+            "project_id",
+            unique=True,
+            postgresql_where=text(ACTIVE_SUMMARY_WHERE),
+            sqlite_where=text(ACTIVE_SUMMARY_WHERE),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("project.id", ondelete="CASCADE"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(16))  # pending|running|succeeded|failed
+    provider: Mapped[str] = mapped_column(String(32))
+    model: Mapped[str | None] = mapped_column(String(100))
+    error_code: Mapped[str | None] = mapped_column(String(32))
+    truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    transcript_count: Mapped[int] = mapped_column(Integer, default=0)
+    image_count: Mapped[int] = mapped_column(Integer, default=0)
+    html: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())

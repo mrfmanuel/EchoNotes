@@ -71,6 +71,13 @@ async def dispose_engine() -> None:
     get_engine.cache_clear()
 
 
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """FastAPI dependency for background jobs that open their own sessions (US-22).
+
+    Tests override it together with `get_session` so jobs use the test database."""
+    return get_sessionmaker()
+
+
 async def get_session() -> AsyncIterator[AsyncSession]:
     """FastAPI dependency: one session per request, always closed afterwards."""
     async with get_sessionmaker()() as session:

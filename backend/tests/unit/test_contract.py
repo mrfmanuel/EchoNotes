@@ -14,9 +14,11 @@ from typing import Any
 import httpx2
 import pytest
 import yaml
+from fastapi import FastAPI
 
 from app.config import get_settings
 from app.main import create_app
+from tests.summary_utils import add_transcript, create_project, wait_for_summary_jobs
 
 CONTRACT = Path(__file__).resolve().parents[3] / "openapi.yaml"
 HTTP_METHODS = frozenset({"get", "put", "post", "patch", "delete", "head", "options", "trace"})
@@ -161,3 +163,77 @@ def test_schema_check_detects_a_missing_or_invalid_field(health_schema: dict[str
         "missing commit",
         "environment='staging' not in ['local', 'dev', 'prod']",
     ]
+
+
+# --- Summary response bodies vs. the `Summary` schema (#58, US-22 AC2) ------------------------
+
+_JSON_TYPES: dict[str, type] = {"string": str, "integer": int, "boolean": bool, "null": type(None)}
+
+
+def _value_violations(key: str, value: Any, rule: dict[str, Any]) -> list[str]:
+    declared = rule.get("type", [])
+    types: list[str] = [declared] if isinstance(declared, str) else declared
+    problems = []
+    matches = [
+        isinstance(value, _JSON_TYPES[t]) and not (t == "integer" and isinstance(value, bool))
+        for t in types
+    ]
+    if types and not any(matches):
+        problems.append(f"{key}={value!r} is not {types}")
+    if "enum" in rule and value not in rule["enum"]:
+        problems.append(f"{key}={value!r} not in {rule['enum']}")
+    return problems
+
+
+def _summary_violations(body: dict[str, Any], schema: dict[str, Any]) -> list[str]:
+    properties: dict[str, Any] = schema["properties"]
+    problems = [f"missing {key}" for key in schema["required"] if key not in body]
+    problems += [f"undocumented {key}" for key in body if key not in properties]
+    for key, value in body.items():
+        problems += _value_violations(key, value, properties.get(key, {}))
+    return problems
+
+
+@pytest.fixture(scope="module")
+def contract_schemas() -> dict[str, Any]:
+    spec = yaml.safe_load(CONTRACT.read_text(encoding="utf-8"))
+    schemas: dict[str, Any] = spec["components"]["schemas"]
+    return schemas
+
+
+@pytest.mark.anyio
+async def test_summary_responses_validate_against_the_contract_schema(
+    app: FastAPI, client: httpx2.AsyncClient, contract_schemas: dict[str, Any]
+) -> None:
+    project = await create_project(client)
+    empty = await client.post(f"/api/projects/{project['id']}/summaries")
+    missing = await client.get(f"/api/projects/{project['id']}/summaries/latest")
+    await add_transcript(client, project["id"])
+    created = await client.post(f"/api/projects/{project['id']}/summaries")
+    not_ready = await client.get(
+        f"/api/projects/{project['id']}/summaries/{created.json()['id']}/download"
+    )
+    await wait_for_summary_jobs(app)
+    latest = await client.get(f"/api/projects/{project['id']}/summaries/latest")
+
+    schema = contract_schemas["Summary"]
+    assert created.status_code == 202 and latest.status_code == 200
+    assert _summary_violations(created.json(), schema) == []
+    assert _summary_violations(latest.json(), schema) == []
+    error_codes = contract_schemas["Error"]["properties"]["code"]["enum"]
+    for response, code in (
+        (empty, "no_transcripts"),
+        (missing, "summary_not_found"),
+        (not_ready, "summary_not_ready"),
+    ):
+        assert response.json()["code"] == code and code in error_codes
+
+
+def test_summary_schema_check_detects_invalid_values(contract_schemas: dict[str, Any]) -> None:
+    body = {"status": "done", "truncated": "no", "html": None, "extra": 1}
+
+    problems = _summary_violations(body, contract_schemas["Summary"])
+
+    assert "status='done' not in ['pending', 'running', 'succeeded', 'failed']" in problems
+    assert "truncated='no' is not ['boolean']" in problems
+    assert "undocumented extra" in problems and "missing id" in problems

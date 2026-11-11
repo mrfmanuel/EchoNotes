@@ -90,6 +90,28 @@ jobs:
       - name: Build
         run: npm run build
 
+  incident-response:
+    name: On-call responder (ruff + tests with a stub agent)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up uv (with cache)
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: incident-response/**/*.py
+
+      - name: Ruff lint + format check (same version as backend/uv.lock)
+        run: |
+          uvx ruff@0.17.4 check --output-format=github incident-response
+          uvx ruff@0.17.4 format --check incident-response
+
+      # Stub agent through ONCALL_AGENT_CMD: never calls a model, Groq or GitHub.
+      - name: Responder tests
+        run: make test-responder
+
   docker:
     name: Docker (build image + boot with compose + smoke test)
     runs-on: ubuntu-latest

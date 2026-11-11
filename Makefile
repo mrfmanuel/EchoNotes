@@ -28,18 +28,35 @@ test: ## Backend unit + integration (throwaway Postgres) and frontend tests; alw
 	@trap '$(TEST_COMPOSE) down -v' EXIT; \
 	trap 'exit 130' INT TERM; \
 	$(TEST_COMPOSE) up -d --wait testdb; \
-	backend=0; frontend=0; \
+	backend=0; frontend=0; responder=0; \
 	(cd backend && TEST_DATABASE_URL='$(TEST_DATABASE_URL)' TRANSCRIBER_PROVIDER=fake uv run pytest) || backend=$$?; \
 	(cd frontend && npm test) || frontend=$$?; \
-	echo "make test: backend (unit + integration) exit $$backend, frontend exit $$frontend"; \
-	[ $$backend -eq 0 ] && [ $$frontend -eq 0 ]
+	$(RESPONDER_TEST) || responder=$$?; \
+	echo "make test: backend (unit + integration) exit $$backend, frontend exit $$frontend, responder exit $$responder"; \
+	[ $$backend -eq 0 ] && [ $$frontend -eq 0 ] && [ $$responder -eq 0 ]
 
-test-unit: ## Fast tests without Docker: backend unit tests + frontend tests
+test-unit: ## Fast tests without Docker: backend unit tests + frontend tests + responder tests
 	cd backend && TRANSCRIBER_PROVIDER=fake uv run pytest -m "not integration"
 	cd frontend && npm test
+	$(RESPONDER_TEST)
 
-lint: ## ruff check + format check, oxlint, tsc
+# On-call responder (#32). Its tests use a stub agent (never a model, never the network).
+RESPONDER_TEST := uv run --no-project --quiet --python 3.12 --with "pytest>=8" --with "pyyaml>=6,<7" \
+	--with "jsonschema>=4.20,<5" pytest -q -p no:cacheprovider incident-response/tests
+.PHONY: test-responder incident incident-cleanup
+
+test-responder: ## On-call responder tests (dedupe, policy, schema, scrubbing; stub agent)
+	$(RESPONDER_TEST)
+
+incident: ## Live on-call demo: chaos branch, incident stack (:8001/:3001), responder, alert, fix PR
+	bash incident-response/test-incident.sh
+
+incident-cleanup: ## Remove the incident stack, worktrees, local branches and images
+	bash incident-response/test-incident.sh --cleanup
+
+lint: ## ruff check + format check (backend + incident-response), oxlint, tsc
 	cd backend && uv run ruff check . && uv run ruff format --check .
+	cd backend && uv run ruff check ../incident-response && uv run ruff format --check ../incident-response
 	cd frontend && npm run lint && npm run typecheck
 
 up: ## Build and start app + Postgres (http://localhost:8000), wait until healthy

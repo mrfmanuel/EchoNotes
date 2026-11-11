@@ -36,3 +36,6 @@ Thumbs.db
 
 # --- Claude Code local settings (shared agents in .claude/agents are tracked) ---
 .claude/settings.local.json
+
+# --- On-call responder work dirs (#32): incident worktrees, dedupe state, responder logs ---
+incident-response/.work/

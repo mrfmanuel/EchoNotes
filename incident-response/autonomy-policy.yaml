@@ -1,0 +1,87 @@
+# Autonomy policy for the on-call responder. ENFORCED IN CODE by responder.py (evaluate_policy),
+# never by the prompt: the model may propose anything, only what passes every check below is
+# committed, pushed and rebuilt. Any failed check => escalation.md, nothing committed or applied.
+version: 1
+
+# Only alerts from this list wake the agent (Grafana alert rule title or rule uid).
+alerts:
+  allowed_alertnames:
+    - "EchoNotes transcription failure ratio high"
+  allowed_rule_uids:
+    - "echonotes-transcription-failure-ratio"
+
+# What the agent may propose. `escalate` is always allowed but never applies anything.
+actions:
+  allowed: [apply_fix]
+  min_confidence: 0.6
+
+# Paths are repo-relative POSIX globs; `**` matches any number of directories.
+changes:
+  allowed_paths:
+    - "backend/app/**"
+    - "backend/tests/**"
+  # Denied wins over allowed.
+  denied_paths:
+    - ".github/**"
+    - "Dockerfile"
+    - "docker-compose*.yml"
+    - "incident-response/**"
+    - "observability/**"
+    - "**/*.env*"
+    - "**/.env*"
+    - "backend/pyproject.toml"
+    - "backend/uv.lock"
+    - "backend/alembic/**"
+  max_changed_lines: 60      # added + deleted, from `git diff --numstat` (not the agent's claim)
+  max_changed_files: 5
+  require_test_change: true  # at least one changed file under backend/tests/
+  # The agent's `files_changed` must match the real diff.
+  require_report_matches_diff: true
+
+# Commands run by the responder in the worktree after the agent finished (argv lists, cwd = the
+# worktree's backend/). The new tests must FAIL on the deployed code (reproduction) and every
+# unit test must PASS with the fix.
+checks:
+  timeout_seconds: 600
+  unit_tests: ["uv", "run", "pytest", "-m", "not integration", "-q", "-p", "no:cacheprovider"]
+  lint: ["uv", "run", "ruff", "check", "."]
+  format: ["uv", "run", "ruff", "format", "--check", "."]
+  require_failing_test_before_fix: true
+
+# Limits for the headless agent run (also passed as CLI flags).
+agent:
+  model: "opus"
+  max_turns: 40
+  max_budget_usd: 3.0
+  timeout_seconds: 1200
+  allowed_tools:
+    - "Read"
+    - "Grep"
+    - "Glob"
+    - "Edit"
+    - "Write"
+    - "Bash(uv run pytest:*)"
+    - "Bash(uv run ruff:*)"
+  disallowed_tools:
+    - "Read(**/.env*)"
+    - "Edit(**/.env*)"
+    - "Write(**/.env*)"
+    - "WebFetch"
+    - "WebSearch"
+    - "Task"
+    - "Bash(git push:*)"
+    - "Bash(git commit:*)"
+    - "Bash(gh:*)"
+    - "Bash(curl:*)"
+    - "Bash(wget:*)"
+    - "Bash(docker:*)"
+    - "Bash(uv add:*)"
+    - "Bash(uv pip:*)"
+    - "Bash(pip:*)"
+
+# After a passing decision.
+publish:
+  push_branch: true          # git push origin oncall/INC-<id> (responder credentials, not the agent's)
+  open_pr: true              # gh pr create --base chaos/INC-<id> (or ONCALL_PR_BASE)
+  rebuild_app: true          # docker compose up -d --build --no-deps app from the fixed worktree
+  verify_recovery: true      # runbooks/verify-recovery.sh

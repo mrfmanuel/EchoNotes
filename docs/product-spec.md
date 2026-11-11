@@ -2,12 +2,12 @@
 
 | | |
 |---|---|
-| Status | **Approved for M2 implementation** (v1.0, 2026-11-10) |
+| Status | **Approved for M4 implementation** (v1.1, 2026-11-10: added §3.6 US-18–US-21 and NFR-Observability) |
 | Owner | `product-manager` agent (see [agent-team.md](agent-team.md)) |
 | API contract | [`openapi.yaml`](../openapi.yaml) (OpenAPI 3.1) |
 | Tracker | [GitHub Issues](https://github.com/mrfmanuel/EchoNotes/issues) · [Milestones](https://github.com/mrfmanuel/EchoNotes/milestones) |
 
-Each user story below has a stable anchor (`#us-01` … `#us-17`, `#nfr-…`). GitHub issues link to these anchors. If a story changes, update this file in the same PR as the issue.
+Each user story below has a stable anchor (`#us-01` … `#us-21`, `#nfr-…`). GitHub issues link to these anchors. If a story changes, update this file in the same PR as the issue.
 
 ---
 
@@ -162,6 +162,36 @@ Each criterion uses Given/When/Then. "Project page" means the screen of a single
 - **AC3** (M3) The response also includes `commit` and `environment`. `commit` is the deployed git SHA: `RENDER_GIT_COMMIT` if set, else the `GIT_SHA` build arg, else `"unknown"`. `environment` is `APP_ENV` (`local` when unset). Neither field exposes secrets. Deploy workflows use `commit` to verify which SHA is running.
 - **AC4** (M3) The UI footer shows the app version, the 7-character short commit and the environment (e.g. `v0.1.0 · a1b2c3d · dev`), read from `/api/health`.
 
+### 3.6 Observability and on-call (M4)
+
+These stories have an operator persona (the developer on call) instead of an end user. They follow the P4 design in [`prompts/P4-observability-oncall.md`](../prompts/P4-observability-oncall.md). Details live in [observability.md](observability.md).
+
+<a id="us-18"></a>
+#### US-18 — Instrumented key journey (traces, metrics, logs sharing a trace ID)
+- **AC1** With `OTEL_EXPORTER_OTLP_ENDPOINT` set, the backend exports OTLP traces, metrics and logs with service name `echonotes-api` and resource attributes `deployment.environment` (`APP_ENV`), `service.version` and the deployed commit.
+- **AC2** FastAPI and SQLAlchemy are auto-instrumented. The Groq call is a client span (auto-instrumentation if one exists for `httpx2`, otherwise a manual span; the deviation is documented). Transcription and export have custom spans with safe attributes only.
+- **AC3** Metrics `echonotes_transcriptions_total{provider,status}` (`status` = `success|client_error|provider_error|timeout`), `echonotes_transcription_duration_seconds` (histogram) and `echonotes_exports_total{status}` exist, plus standard HTTP server metrics.
+- **AC4** Every JSON log line written inside a request has `trace_id` and `span_id` next to `request_id`, matching the active span.
+- **AC5** With `OTEL_EXPORTER_OTLP_ENDPOINT` empty or unset, the app behaves exactly as before (tests, CI and Render prod need no collector).
+- **AC6** Automated tests prove that spans, metric labels and log records produced by a transcription + export contain none of the values listed in [NFR-Privacy](#nfr-privacy).
+
+<a id="us-19"></a>
+#### US-19 — Local telemetry stack and journey dashboard
+- **AC1** `make obs-up` starts the app, Postgres and a single `grafana/otel-lgtm` container in one command; `make obs-down` stops them. Plain `docker compose up --build` is unchanged and starts no observability containers.
+- **AC2** Grafana is provisioned from files in `observability/`: Prometheus, Loki and Tempo datasources with trace-to-log and log-to-trace correlation by `trace_id`, and the dashboard `observability/dashboard.json` (request rate, error ratio, p95 latency, transcriptions by status, recent error logs, links to traces).
+
+<a id="us-20"></a>
+#### US-20 — Alert on user impact
+- **AC1** The alert "EchoNotes transcription failure ratio high" fires when failed transcriptions (`provider_error|timeout` plus 5xx on the journey endpoints) divided by all transcriptions exceed 20 % over a 2–5 minute window, with a minimum request count. It is not based on CPU or memory.
+- **AC2** The alert carries labels `severity` and `journey` and annotations `summary`, `runbook_url` (`docs/runbooks/transcription-failures.md`) and a dashboard link, and notifies a webhook contact point (the local responder).
+
+<a id="us-21"></a>
+#### US-21 — On-call responder agent
+- **AC1** When the alert fires, a responder on the host receives the webhook, de-duplicates it, opens an incident folder, collects a bounded read-only evidence packet and runs Claude Code headless in an isolated git worktree with a restricted tool allowlist and turn/time limits.
+- **AC2** The agent's answer must match `response.schema.json`. Code outside the model enforces `autonomy-policy.yaml` (allowed paths, max changed lines, unit tests pass). If the policy fails, the responder writes `escalation.md` and applies nothing.
+- **AC3** If the policy passes, the responder commits, pushes a branch, opens a PR, rebuilds the local app from the fixed worktree and verifies recovery. Every step is recorded in the incident folder.
+- **AC4** `incident-response/test-incident.sh` runs the whole demo in one command with an injected bug that never reaches `main`.
+
 ## 4. Key user journey
 
 > **Upload audio → transcript visible → export**
@@ -199,6 +229,7 @@ This journey is the one we instrument and alert on in M4 (see [observability.md]
 - <a id="nfr-performance"></a>**NFR-Performance** The API overhead (excluding provider time) is under 500 ms p95 for CRUD endpoints. Transcription of a 5-minute clip on Groq is expected in under 30 s.
 - <a id="nfr-portability"></a>**NFR-Portability** The whole system runs locally with one command (`docker compose up --build`) and works without a Groq key (`TRANSCRIBER_PROVIDER=fake`).
 - <a id="nfr-testability"></a>**NFR-Testability** All business logic is testable with the `fake` transcriber. CI never calls Groq.
+- <a id="nfr-observability"></a>**NFR-Observability** Telemetry is optional: without `OTEL_EXPORTER_OTLP_ENDPOINT` nothing is exported and nothing breaks. The local stack is the supported telemetry backend; a hosted prod backend (for example Grafana Cloud OTLP) is future work.
 
 ## 6. Constraints and technical decisions
 

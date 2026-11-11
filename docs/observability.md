@@ -1,14 +1,22 @@
 # Observability, Alerting and On-call
 
-> Status: **planned in P4 (M4 Observability & On-call).** The privacy rules below already apply to all code.
+> Status: **being built in P4 (M4 Observability & On-call).** The plan below follows the binding design in [`prompts/P4-observability-oncall.md`](../prompts/P4-observability-oncall.md). User stories: [US-18 … US-21](product-spec.md#us-18). The privacy rules below already apply to all code.
 
-## Plan
+## Plan (M4)
+
+| Piece | Issue | Story |
+|---|---|---|
+| OpenTelemetry traces, metrics and logs sharing `trace_id` | [#29](https://github.com/mrfmanuel/EchoNotes/issues/29) | [US-18](product-spec.md#us-18) |
+| Local stack `observability/` (`grafana/otel-lgtm`) + dashboard | [#30](https://github.com/mrfmanuel/EchoNotes/issues/30) | [US-19](product-spec.md#us-19) |
+| Alert on user impact + runbook | [#31](https://github.com/mrfmanuel/EchoNotes/issues/31) | [US-20](product-spec.md#us-20) |
+| On-call responder (`incident-response/`) | [#32](https://github.com/mrfmanuel/EchoNotes/issues/32) | [US-21](product-spec.md#us-21) |
 
 - **Instrumented journey:** *upload audio → transcript visible → export* (`POST /api/projects/{id}/transcriptions`, `GET /api/projects/{id}/export`).
-- **Signals:** OpenTelemetry traces (FastAPI, SQLAlchemy, httpx to Groq), metrics (request rate, error rate, latency histograms, `transcriptions_total{provider,status}`, `transcription_duration_seconds`), and structured JSON logs with `trace_id` and `span_id` so all three correlate to a single request.
-- **Backend for signals:** an OTLP exporter to a hosted backend (for example Grafana Cloud) with a UI for traces, metrics and logs. To be decided in P4.
-- **Alert on user impact:** for example, *transcription failure rate > 20 % over 10 min* or *p95 transcription latency > 60 s*, never CPU. Each alert links to a runbook in `docs/runbooks/`.
-- **On-call responder agent:** triggered by the alert (webhook → GitHub Actions `repository_dispatch`). It reads the runbook, gathers telemetry and recent deploys, opens an incident issue, and opens a fix or rollback PR that goes through the normal QA/CI gate.
+- **Signals:** OTel traces (FastAPI, SQLAlchemy, a client span around the Groq call; `httpx2` has no official instrumentation, so the span may be manual), metrics (`echonotes_transcriptions_total{provider,status}`, `echonotes_transcription_duration_seconds`, `echonotes_exports_total{status}`, HTTP server metrics) and JSON logs with `trace_id`/`span_id` next to `request_id`, also exported via OTLP. Service `echonotes-api`.
+- **Optional by design:** with `OTEL_EXPORTER_OTLP_ENDPOINT` empty, nothing is exported (tests, CI and Render prod run without a collector). A hosted prod backend (for example Grafana Cloud OTLP) is future work.
+- **Backend for signals:** local single container `grafana/otel-lgtm` (Collector + Prometheus + Loki + Tempo + Grafana), started with `make obs-up`, provisioned from `observability/`.
+- **Alert on user impact:** transcription failure ratio > 20 % over 2–5 min with a minimum request count, never CPU. Runbook: `docs/runbooks/transcription-failures.md`. Contact point: webhook to the host responder `http://host.docker.internal:9095/alert`.
+- **On-call responder:** `incident-response/responder.py` on the host receives the webhook, collects read-only evidence, runs Claude Code headless in an isolated worktree, enforces `autonomy-policy.yaml` in code, then opens a PR and verifies recovery, or escalates. The demo (`test-incident.sh`) injects a bug on a throwaway branch `chaos/INC-<id>` that never reaches `main`.
 
 ## Logging (M2)
 

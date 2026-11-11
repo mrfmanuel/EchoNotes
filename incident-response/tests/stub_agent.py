@@ -124,6 +124,10 @@ def main() -> None:
     leaked = [name for name in ("GROQ_API_KEY", "GH_TOKEN", "GITHUB_TOKEN") if name in os.environ]
     scenario = os.environ.get("ONCALL_STUB_SCENARIO", "good_fix")
     result: dict | str
+    if scenario in ("cli_error_stderr", "cli_error_stdout"):  # the CLI fails before any turn
+        message = "Error: --json-schema is not a valid JSON Schema (stub)"
+        print(message, file=sys.stderr if scenario == "cli_error_stderr" else sys.stdout)
+        raise SystemExit(1)
     if scenario == "good_fix":
         write(APP, FIX)
         write(NEW_TEST, TEST)

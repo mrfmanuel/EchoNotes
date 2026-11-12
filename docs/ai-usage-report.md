@@ -248,7 +248,7 @@ How AI tools were used to build EchoNotes, what the agents did, and what a human
 | `product-manager` | US-22 (AC1–AC21) and NFR-AI-Summary, milestone M5, issues #58–#60; opened bug #64 from QA and real-run findings and updated AC19 |
 | `software-engineer` (×3 builds + fixes) | PR #62 (backend: providers, prompt builder, nh3 sanitizer, background job, migration, ZIP, telemetry); PR #61 (frontend `SummaryPanel`); PR #65 (hardening: stale jobs, timeout/503 fallback, EXIF, conditional state writes) |
 | `devops-sre` | PR #63: compose passthrough, Grafana summary panels, optional smoke step (on for dev deploys, with a provider check), docs, compose healthcheck fix |
-| `qa-engineer` (×9 runs) | #61 CHANGES REQUESTED → APPROVED; #62 CHANGES REQUESTED → APPROVED; #63 CHANGES REQUESTED → APPROVED; #65 CHANGES REQUESTED → APPROVED. Every first review requested changes, and each one found something real |
+| `qa-engineer` (×8 runs on the feature PRs, plus the release PR #66) | #61 CHANGES REQUESTED → APPROVED; #62 CHANGES REQUESTED → APPROVED; #63 CHANGES REQUESTED → APPROVED; #65 CHANGES REQUESTED → APPROVED. Every first review requested changes, and each one found something real |
 
 ### Pull requests and issues
 

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | **Delivered** (v1.1, M1–M4 complete; US-18–US-21 and NFR-Observability added 2026-11-10). **Bonus in progress:** US-22 AI-generated project summary and NFR-AI-Summary (M5, added 2026-11-11) |
+| Status | **Delivered** (M1–M5 complete; US-18–US-21 and NFR-Observability added 2026-11-10; bonus US-22 AI-generated project summary and NFR-AI-Summary added 2026-11-11, released in app v1.1.0) |
 | Owner | `product-manager` agent (see [agent-team.md](agent-team.md)) |
 | API contract | [`openapi.yaml`](../openapi.yaml) (OpenAPI 3.1) |
 | Tracker | [GitHub Issues](https://github.com/mrfmanuel/EchoNotes/issues) · [Milestones](https://github.com/mrfmanuel/EchoNotes/milestones) |

@@ -1,6 +1,6 @@
 [project]
 name = "echonotes-backend"
-version = "1.0.0"
+version = "1.1.0"
 description = "EchoNotes API: turn audio into organized text notes."
 requires-python = ">=3.12,<3.13"
 dependencies = [

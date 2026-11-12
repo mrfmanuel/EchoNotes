@@ -1,6 +1,6 @@
 # AI Usage Report
 
-How AI tools were used to build EchoNotes, what the agents did, and what a human verified. This report is updated after each prompt (P1–P4). The prompts themselves are stored in [`prompts/`](../prompts/).
+How AI tools were used to build EchoNotes, what the agents did, and what a human verified. This report is updated after each prompt (P1–P5). The prompts themselves are stored in [`prompts/`](../prompts/).
 
 ## Tools
 
@@ -217,6 +217,86 @@ How AI tools were used to build EchoNotes, what the agents did, and what a human
 - Look at Grafana yourself: `make obs-up`, then <http://localhost:3000>.
 - Optionally rerun `make incident`. It costs a few tens of cents of model usage and needs `gh` and `claude` logged in.
 - Approve the final prod deploy in GitHub's `production` environment.
+
+## P5 — Bonus: AI-generated HTML project summary (2026-11-11/12)
+
+- **Prompt:** [`prompts/P5-ai-summary.md`](../prompts/P5-ai-summary.md)
+- **Summary:**
+  - Milestone M5, story [US-22](product-spec.md#us-22).
+  - A **Generate summary** button next to Export ZIP. It turns every transcript and screenshot of a project into one self-contained `summary.html`, made in the background by an LLM.
+  - The summary has a title, an overview, key points, decisions and action items, one section per transcript, and the screenshots placed where they belong, each with a caption.
+  - It is shown in a sandboxed iframe, can be downloaded, and is included in the ZIP.
+  - Providers sit behind a pluggable `Summarizer`: `gemini` (default when `GEMINI_API_KEY` is set), `groq` (text only) and `fake` (tests and CI).
+  - Released as app **v1.1.0**.
+
+### How the session was orchestrated
+- **Facts first, then a binding brief.** Before writing the P5 brief, the tech lead:
+  - had a `web-fetch` agent read Google's model docs;
+  - listed the models the real key can see. `gemini-3.8-flash` and `gemini-3.5-flash-lite` are both available, and no `temperature` may be sent to models from 3.6 on;
+  - listed the Groq models, which gave the text fallback `openai/gpt-oss-120b`.
+
+  The brief fixed the API contract, the config and its defaults, the HTML safety pipeline, the telemetry names and the machine rules.
+- **The spec wins over the brief.** The PM numbered the story US-22, because US-18–21 were taken in P4. It chose some names (`error_code`, `no_transcripts`, `SUMMARY_MAX_CHARS`). The tech lead aligned the brief to the spec instead of the other way round.
+- **Parallel build against a contract.** The backend (#58) and frontend (#59) were built at the same time in isolated worktrees. QA checked that the frontend's types matched the backend's `openapi.yaml` field by field. The ops PR for #60 was written against the backend PR's real variable and metric names before that PR merged.
+- **Merge order on purpose.** The approved frontend PR waited for the backend, so dev never showed a button without an API. The ops PR merged last, because its dev smoke step calls the new endpoints.
+
+### What each agent did
+
+| Agent | Work |
+|---|---|
+| `web-fetch` | Read Google's Gemini model, rate-limit and pricing docs. Found that the free tier may use content to improve Google products |
+| `product-manager` | US-22 (AC1–AC21) and NFR-AI-Summary, milestone M5, issues #58–#60; opened bug #64 from QA and real-run findings and updated AC19 |
+| `software-engineer` (×3 builds + fixes) | PR #62 (backend: providers, prompt builder, nh3 sanitizer, background job, migration, ZIP, telemetry); PR #61 (frontend `SummaryPanel`); PR #65 (hardening: stale jobs, timeout/503 fallback, EXIF, conditional state writes) |
+| `devops-sre` | PR #63: compose passthrough, Grafana summary panels, optional smoke step (on for dev deploys, with a provider check), docs, compose healthcheck fix |
+| `qa-engineer` (×9 runs) | #61 CHANGES REQUESTED → APPROVED; #62 CHANGES REQUESTED → APPROVED; #63 CHANGES REQUESTED → APPROVED; #65 CHANGES REQUESTED → APPROVED. Every first review requested changes, and each one found something real |
+
+### Pull requests and issues
+
+| PR | Issues | Content |
+|---|---|---|
+| [#62](https://github.com/mrfmanuel/EchoNotes/pull/62) | #58 | Summarizer (gemini/groq/fake), `summaries` table + migration, 3 endpoints + contract, background job, sanitize-then-embed HTML, `summary.html` in ZIP, span + metrics + privacy tests |
+| [#61](https://github.com/mrfmanuel/EchoNotes/pull/61) | #59 | Generate summary button, 3 s polling, sandboxed `srcdoc` iframe, download, error + retry, privacy note |
+| [#63](https://github.com/mrfmanuel/EchoNotes/pull/63) | #60 | Compose vars, Grafana panels, `SMOKE_SUMMARY` step, docs, `pg_isready -h 127.0.0.1` |
+| [#65](https://github.com/mrfmanuel/EchoNotes/pull/65) | #64 | Stuck-job recovery, fallback on primary timeout / transport error / 429 / 500 / 503, EXIF orientation, conditional writes |
+| release PR | #60 | v1.1.0, README, this section |
+
+### Problems found by QA, by real runs and by the process
+- **The UI could lose a job it had just started (#61).** If the first `GET latest` was slow, it came back after a click on Generate and overwrote the new job. Polling stopped while the job ran unseen. QA reproduced it with a held-open request.
+- **A 150 KiB screenshot could take down the 512 MB instance (#62).** A 6300×6300 PNG passed every upload check, and resizing it took the process from 45 to 560 MiB. QA measured it. The fix:
+  - a 16 MP cap checked from the image header, before decoding;
+  - no extra copy of the image in memory;
+  - only one image decoded at a time.
+
+  The worst case is now 194 MiB.
+- **Other problems found by QA on #62:**
+  - **Image size:** the tech lead turned a non-blocking finding into a requirement. Eight PNG screenshots could make `summary.html` 50–70 MB. Images are now JPEG, under a 4 MB budget.
+  - **Crash on unusual digits:** a Unicode digit such as "²" in a screenshot number crashed the job (`isdigit` accepts it, `int` does not).
+- **QA tried to break the sanitizer.** It ran 33 attacks against it (`<svg onload>`, mXSS variants, `javascript:` URLs, CSS `url()`, a transcript containing `</transcript>`, a hostile project name), and none got through. The output is also covered by a CSP that allows only `data:` images.
+- **The first real Gemini run failed with 503 (`gemini-3.8-flash` overloaded).**
+  - The app logged only the status code and no content.
+  - Direct probes showed the model alternating between a fast 503 and hanging past 30 s, while `gemini-3.5-flash-lite` answered in about 1 s.
+  - The first dev deploy then showed the hang for real: the summary step ended `provider_timeout` after 91 s, and the smoke test tolerated it as a warning.
+  - **Fix (#64/#65):** the primary model gets its own 40 s timeout. A timeout, a transport error or a 429/500/503 triggers one fallback attempt within the overall 90 s deadline.
+- **QA found a race in the first version of the stuck-job fix (#65).** A job marked stale but still alive could finish late, mark itself succeeded and delete the newer job. Every state change is now a conditional `UPDATE ... WHERE status IN ('pending','running')`, and image preparation counts toward the job deadline.
+- **A rubric-level bug found by the real demo.** On a fresh volume, `docker compose up` could crash the app. The cause: `pg_isready` over the Unix socket passes while Postgres's temporary init server is running. The tech lead hit this on the real demo stack, and #63 fixed it with `-h 127.0.0.1`. CI had never shown it.
+- **The usage limit stopped the hardening engineer in the middle of a fix.** It was resumed from its saved state after the reset.
+
+### Tech-lead verification (live)
+- **Local, real Gemini:** a demo project with 2 transcripts and 2 screenshots, generated through the real API and UI.
+  - `gemini-3.8-flash` → 503, then the automatic fallback `gemini-3.5-flash-lite` → **succeeded in 12 s**: 2 transcripts, 2 images, about 104 KB of HTML.
+  - The summary was accurate, with every required section. No `<script>`, no external URL, and both screenshots were embedded with fitting captions.
+  - The download had `Content-Disposition: attachment; filename="summary.html"`, and the ZIP contained `summary.html`. Screenshots: [09](images/09-ai-summary.png), [10](images/10-ai-summary-figure.png).
+- **Dev, real Gemini, run by the deploy smoke** ([run 43141655920](https://github.com/mrfmanuel/EchoNotes/actions/runs/43141655920)): `summary latest succeeded provider=gemini model=gemini-3.5-flash-lite` after 42 s. Download and ZIP passed.
+- **`make test`:** **904 tests pass** (608 backend unit + 45 integration on Postgres + 168 frontend + 83 responder). CI is green on `main`.
+
+### What a human must still verify
+- Generate a summary on prod with your own (non-sensitive) audio and screenshots, and read it for accuracy and language. The model chooses the dominant language of the transcripts.
+- Approve the prod deploy of v1.1.0.
+
+### Retrospective addendum (P5)
+- **Real calls beat documentation again.** The docs said `gemini-3.8-flash` was the stable free-tier Flash. In practice it was overloaded on every attempt that day. Only real runs, local and on dev, showed that the fallback path *was* the product. The original design only fell back on 429.
+- **QA requested changes on every first review in P5, and each finding was real:** a UI race, an out-of-memory risk, a job crash, a docs error, and a race in the race fix. A skeptical independent verifier stayed the most valuable role.
+- **Contract-first parallel work held up.** The frontend and backend were built at the same time against the brief, and they matched field for field on the first try.
 
 ## Retrospective (P0–P4)
 

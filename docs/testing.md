@@ -1,16 +1,16 @@
 # Testing Strategy
 
-> Status: implemented (M2 #23; telemetry tests #29, responder tests #32). Every suite below exists, runs with one command (`make test`) and runs in CI on every PR.
+> Status: implemented (M2 #23; telemetry tests #29, responder tests #32; AI summary tests #58, #59, #64). Every suite below exists, runs with one command (`make test`) and runs in CI on every PR.
 
 ## Test pyramid
 
-Counts as of #47. `pytest --collect-only -q` and `npx vitest run` print the current numbers.
+Counts as of v1.1.0 (M5). `pytest --collect-only -q` and `npx vitest run` print the current numbers.
 
 | Level | Tests | Tooling | What it covers | Runs in |
 |---|---:|---|---|---|
-| Backend unit | 456 | `pytest`, AnyIO, in-memory SQLite (`aiosqlite`), `httpx2.ASGITransport`, fake/stub transcribers | Settings, slugs, upload and image validation, transcript formatting, export plan, every API endpoint (happy path + 4xx/5xx shapes), request IDs and JSON logs, Groq client with a mocked HTTP layer, SPA serving, event loop selection (#41), Alembic CLI logs as JSON (#41), **contract test** (`openapi.yaml` ↔ FastAPI), **OpenTelemetry** spans/metrics/logs with in-memory exporters and **telemetry privacy** tests (#29) | every PR (`backend` job), `make test`, `make test-unit` |
-| Backend integration | 38 | `pytest -m integration`, real Postgres 16, Alembic migrations, `httpx2.ASGITransport` | Migrations (empty DB → head, downgrade/upgrade round trip, models == migrations), cascades and `SET NULL` on Postgres, every API flow with persistence (bytea, `timestamptz`, unique slugs), export ZIP tree, **full flow** and **privacy** test | every PR (`backend` job with a `postgres:16` service), `make test` |
-| Frontend component | 136 | Vitest + Testing Library + jsdom, mocked API client | Pages and components: projects, upload/record, transcript editor (copy, download, unsaved changes), screenshots (picker, Ctrl+V paste, link, gallery), export, API client errors, build-info footer | every PR (`frontend` job), `make test`, `make test-unit` |
+| Backend unit | 608 | `pytest`, AnyIO, in-memory SQLite (`aiosqlite`), `httpx2.ASGITransport`, fake/stub transcribers | Settings, slugs, upload and image validation, transcript formatting, export plan, every API endpoint (happy path + 4xx/5xx shapes), request IDs and JSON logs, Groq client with a mocked HTTP layer, SPA serving, event loop selection (#41), Alembic CLI logs as JSON (#41), **contract test** (`openapi.yaml` ↔ FastAPI), **OpenTelemetry** spans/metrics/logs with in-memory exporters and **telemetry privacy** tests (#29) | every PR (`backend` job), `make test`, `make test-unit` |
+| Backend integration | 45 | `pytest -m integration`, real Postgres 16, Alembic migrations, `httpx2.ASGITransport` | Migrations (empty DB → head, downgrade/upgrade round trip, models == migrations), cascades and `SET NULL` on Postgres, every API flow with persistence (bytea, `timestamptz`, unique slugs), export ZIP tree, **full flow** and **privacy** test | every PR (`backend` job with a `postgres:16` service), `make test` |
+| Frontend component | 168 | Vitest + Testing Library + jsdom, mocked API client | Pages and components: projects, upload/record, transcript editor (copy, download, unsaved changes), screenshots (picker, Ctrl+V paste, link, gallery), export, API client errors, build-info footer | every PR (`frontend` job), `make test`, `make test-unit` |
 | On-call responder | 83 | `pytest` (stdlib + PyYAML/jsonschema via `uv run`), a **stub agent** instead of `claude`, throwaway git repos | Webhook dedupe and malformed input, evidence collection and scrubbing, response schema, every autonomy-policy check (paths, lines, removed tests, secrets, symlinks, reproduction, hooks/config tampering, commit = evaluated diff), the full pipeline with publish/deploy stubs, CLI-compatible schema (#32) | every PR (`incident-response` job), `make test`, `make test-unit`, `make test-responder` |
 | End-to-end smoke | 1 script (8 steps, +1 optional) | `scripts/smoke.sh` (bash + curl + Python 3) against a running stack | Key journey: health → SPA → create project → upload audio → transcript → screenshot → [AI summary, `SMOKE_SUMMARY=1`] → export ZIP → delete | every PR (CI `docker` job, compose stack); after every deploy (M3); the summary step after dev deploys only |
 

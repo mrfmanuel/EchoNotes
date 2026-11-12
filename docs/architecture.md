@@ -1,6 +1,6 @@
 # Architecture
 
-> Status: implemented (v1.0.0). App in M2, deployment on Render + Neon in M3 ([deployment.md](deployment.md)), OpenTelemetry and the on-call responder in M4 ([observability.md](observability.md), [on-call.md](on-call.md)). AI project summary (US-22) in M5.
+> Status: implemented (v1.1.0). App in M2, deployment on Render + Neon in M3 ([deployment.md](deployment.md)), OpenTelemetry and the on-call responder in M4 ([observability.md](observability.md), [on-call.md](on-call.md)). AI project summary (US-22) in M5.
 
 ## Overview
 

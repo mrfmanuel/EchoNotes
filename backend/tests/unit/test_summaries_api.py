@@ -9,6 +9,7 @@ import re
 import time
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
@@ -17,7 +18,7 @@ import pytest
 from fastapi import FastAPI
 from PIL import Image
 from pydantic import SecretStr
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -740,6 +741,211 @@ async def test_the_shutdown_interrupted_write_gives_up_after_a_short_timeout(
     await service._store_interrupted_on_cancel(hanging_factory, uuid.uuid4(), {})  # type: ignore[arg-type]
 
     assert time.monotonic() - began < 2
+
+
+@asynccontextmanager
+async def _hanging_session() -> Any:
+    await asyncio.Event().wait()  # the database never answers
+    yield None
+
+
+@dataclass
+class _HangingAfterStart:
+    """The real session factory until `hang` is set; then every session hangs forever."""
+
+    real: async_sessionmaker[AsyncSession]
+    hang: bool = False
+
+    def __call__(self) -> Any:
+        return _hanging_session() if self.hang else self.real()
+
+
+async def _pending_row(session: AsyncSession, project_id: str) -> uuid.UUID:
+    row = Summary(project_id=uuid.UUID(project_id), status="pending", provider="fake")
+    session.add(row)
+    await session.commit()
+    return row.id
+
+
+def test_the_shutdown_write_timeout_is_pinned_at_2_seconds() -> None:
+    assert service.SHUTDOWN_WRITE_TIMEOUT_SECONDS == 2.0
+
+
+async def test_shutdown_cancellation_is_re_raised_even_when_the_write_hangs(
+    client: httpx2.AsyncClient,
+    session: AsyncSession,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    project_id = await project_with_transcript(client)
+    summary_id = await _pending_row(session, project_id)
+    blocking = BlockingSummarizer()
+    factory = _HangingAfterStart(session_maker)
+    task = asyncio.create_task(
+        service.run_summary_job(
+            factory,  # type: ignore[arg-type]
+            blocking,
+            summary_id,
+            uuid.UUID(project_id),
+            get_settings(),
+        )
+    )
+    await asyncio.wait_for(blocking.started.wait(), 5)
+    factory.hang = True
+
+    began = time.monotonic()
+    task.cancel()
+    await asyncio.wait({task}, timeout=10)
+
+    elapsed = time.monotonic() - began
+    assert task.done() and task.cancelled()  # the cancellation was re-raised, not swallowed
+    assert 1.5 <= elapsed < 4  # bounded by the real 2 s shutdown-write timeout
+
+
+async def test_shutdown_cancellation_ends_the_task_cancelled_after_the_write(
+    client: httpx2.AsyncClient,
+    session: AsyncSession,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    project_id = await project_with_transcript(client)
+    summary_id = await _pending_row(session, project_id)
+    blocking = BlockingSummarizer()
+    task = asyncio.create_task(
+        service.run_summary_job(
+            session_maker, blocking, summary_id, uuid.UUID(project_id), get_settings()
+        )
+    )
+    await asyncio.wait_for(blocking.started.wait(), 5)
+
+    task.cancel()
+    await asyncio.wait({task}, timeout=5)
+
+    assert task.cancelled()
+    row = await _row(session_maker, summary_id)
+    assert row is not None and row.status == "failed" and row.error_code == "interrupted"
+
+
+# --- R1 (QA on #65): a stale-marked job that is still alive never wins ------------------------
+
+
+def _task_for(app: FastAPI, summary_id: str) -> asyncio.Task[None]:
+    tasks: set[asyncio.Task[None]] = app.state.summary_tasks
+    return next(t for t in tasks if t.get_name() == f"summary-{summary_id}")
+
+
+async def test_a_stale_marked_job_that_finishes_late_is_discarded_and_the_new_job_survives(
+    app: FastAPI,
+    client: httpx2.AsyncClient,
+    session: AsyncSession,
+    session_maker: async_sessionmaker[AsyncSession],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    first = BlockingSummarizer()
+    use(app, first)
+    project_id = await project_with_transcript(client)
+    job1 = (await client.post(f"/api/projects/{project_id}/summaries")).json()["id"]
+    await asyncio.wait_for(first.started.wait(), 5)
+    await session.execute(
+        update(Summary)
+        .where(Summary.id == uuid.UUID(job1))
+        .values(created_at=utcnow() - _stale_age() - timedelta(seconds=1))
+    )
+    await session.commit()
+    reported = (await client.get(f"/api/projects/{project_id}/summaries/latest")).json()
+    second = BlockingSummarizer()
+    use(app, second)
+    job2 = (await client.post(f"/api/projects/{project_id}/summaries")).json()["id"]
+    await asyncio.wait_for(second.started.wait(), 5)
+
+    with caplog.at_level(logging.INFO, logger="app.services.summaries"):
+        first.release.set()  # job 1 was alive after all and now finishes late
+        await _task_for(app, job1)
+
+    assert reported["status"] == "failed" and reported["error_code"] == "interrupted"
+    stale = await _row(session_maker, uuid.UUID(job1))
+    assert stale is not None and stale.status == "failed" and stale.error_code == "interrupted"
+    assert stale.html is None and stale.model is None  # job 1's result was discarded
+    running = await _row(session_maker, uuid.UUID(job2))
+    assert running is not None and running.status == "running"  # job 2 survived
+    finished = [r for r in caplog.records if r.getMessage() == "summary_finished"]
+    assert [getattr(r, "status", None) for r in finished] == ["interrupted"]
+    second.release.set()
+    await wait_for_summary_jobs(app)
+    latest = (await client.get(f"/api/projects/{project_id}/summaries/latest")).json()
+    assert latest["id"] == job2 and latest["status"] == "succeeded"
+    assert await _summary_ids(session_maker) == [uuid.UUID(job2)]
+
+
+@pytest.mark.parametrize("final", ["succeeded", "failed"])
+async def test_marking_interrupted_never_overwrites_a_finished_row(
+    client: httpx2.AsyncClient,
+    session: AsyncSession,
+    session_maker: async_sessionmaker[AsyncSession],
+    final: str,
+) -> None:
+    project_id = await project_with_transcript(client)
+    row = Summary(
+        project_id=uuid.UUID(project_id),
+        status=final,
+        provider="fake",
+        error_code="provider_error" if final == "failed" else None,
+        html="<p>kept</p>" if final == "succeeded" else None,
+    )
+    session.add(row)
+    await session.commit()
+
+    await session.execute(service._interrupt(Summary.id == row.id))
+    await session.commit()
+    stored_failure = await service._store_failure(session_maker, row.id, "internal_error")
+
+    after = await _row(session_maker, row.id)
+    assert after is not None and after.status == final and stored_failure is False
+    assert after.error_code == ("provider_error" if final == "failed" else None)
+
+
+async def test_a_late_failure_of_a_taken_over_job_does_not_overwrite_interrupted(
+    session: AsyncSession,
+    client: httpx2.AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    project_id = await project_with_transcript(client)
+    summary_id = await _pending_row(session, project_id)
+    await session.execute(service._interrupt(Summary.id == summary_id))
+    await session.commit()
+
+    await service.run_summary_job(
+        session_maker,
+        StubSummarizer(),
+        summary_id,
+        uuid.UUID(project_id),
+        get_settings(),
+    )
+
+    row = await _row(session_maker, summary_id)
+    assert row is not None and row.status == "failed" and row.error_code == "interrupted"
+    assert row.started_at is None  # never moved back to running
+
+
+async def test_image_preparation_counts_toward_the_job_deadline(
+    app: FastAPI, client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SUMMARY_TIMEOUT_SECONDS", "0.2")
+    get_settings.cache_clear()
+    original = service._load_job
+
+    async def slow_load(*args: Any) -> Any:
+        await asyncio.sleep(30)  # e.g. many large screenshots behind the decode lock
+        return await original(*args)
+
+    monkeypatch.setattr(service, "_load_job", slow_load)
+    stub = StubSummarizer()
+    use(app, stub)
+    project_id = await project_with_transcript(client)
+    began = time.monotonic()
+
+    summary = await generate(app, client, project_id)
+
+    assert time.monotonic() - began < 5 and stub.requests == []
+    assert summary["status"] == "failed" and summary["error_code"] == "provider_timeout"
 
 
 async def test_deleting_the_project_deletes_its_summaries(

@@ -123,10 +123,12 @@ class SummaryResult:
 
 **Background job.** `POST /api/projects/{projectId}/summaries` checks the project (404) and that it has at least one transcript (409 `no_transcripts`). If the project already has a `pending`/`running` job it returns that one (202), otherwise it inserts a `pending` row and returns **202** at once. The request's DB session is closed, then `asyncio.create_task` starts the job. Strong references live in `app.state.summary_tasks` and the lifespan cancels them at shutdown. The job (`app/services/summaries.py`) uses its own short-lived sessions, so no connection is held while the provider works:
 
-1. Load the project, its transcripts and the selected screenshots, build the prompt and mark the row `running` (`started_at`).
-2. Call the provider inside `asyncio.wait_for(SUMMARY_TIMEOUT_SECONDS)` (the whole job, fallback included).
-3. Sanitize and render (below), then store `succeeded` with `html`, `model`, counts and `truncated`, and delete the project's older summaries (regeneration keeps one).
+1. Mark the row `pending` → `running` (`started_at`), then load the project, its transcripts and the selected screenshots, and build the prompt.
+2. Call the provider. Steps 1 and 2 share one `asyncio.timeout(SUMMARY_TIMEOUT_SECONDS)` deadline (image preparation and both Gemini attempts included), so a live job always ends before its row can become stale (`created_at` + `SUMMARY_TIMEOUT_SECONDS` + 60 s).
+3. Sanitize and render (below), then store `succeeded` with `html`, `model`, counts and `truncated`, and delete the project's older, finished summaries (regeneration keeps one).
 4. Any failure stores `failed` with a safe `error_code`: `provider_timeout`, `provider_error` (also a 429 from both models) or `internal_error`. The provider's response text is never stored or logged. If the new job fails, an older succeeded summary is kept and still goes into the ZIP.
+
+**Conditional transitions (#64).** Every write a job makes is `UPDATE … WHERE id = :id AND status IN (…)`, and the job checks the rowcount: `pending`→`running`, `running`→`succeeded`, active→`failed`, and the stale or shutdown `interrupted` marking. A row that is already final is never overwritten. If a job finds its row no longer active, for example because a stale check marked it `interrupted` and a newer job started, it discards its result without deleting anything. It logs `summary result discarded` (IDs only) and counts `status="interrupted"`.
 
 **Startup recovery.** The lifespan runs `UPDATE summaries SET status='failed', error_code='interrupted', finished_at=now WHERE status IN ('pending','running')` (rows left by a restart or deploy) and logs only the count.
 

@@ -261,38 +261,25 @@ async def _run(
 ) -> None:
     error_code: SummaryErrorCode
     try:
-        job = await _load_and_mark_running(factory, summary_id, settings)
-        if job is None:  # deleted with its project before the job started
-            track.status = SummaryMetricStatus.INTERNAL_ERROR
-            return
-        track.annotate(
-            transcript_count=len(job.request.transcript_titles),
-            image_count=len(job.images),
-            input_chars=job.input_chars,
-            truncated=job.truncated,
-        )
-        logger.info(
-            "summary_started",
-            extra={
-                **fields,
-                "provider": summarizer.name,
-                "transcript_count": len(job.request.transcript_titles),
-                "image_count": len(job.images),
-                "input_chars": job.input_chars,
-                "truncated": job.truncated,
-            },
-        )
-        result = await asyncio.wait_for(
-            summarizer.summarize(job.request), settings.summary_timeout_seconds
-        )
+        # One deadline for preparation (images) and the provider, so a live job always ends
+        # well before it can look stale (created_at + SUMMARY_TIMEOUT_SECONDS + 60 s, AC18).
+        async with asyncio.timeout(settings.summary_timeout_seconds):
+            job = await _load_and_mark_running(factory, summary_id, settings)
+            if job is None:
+                _taken_over(track, fields)
+                return
+            _annotate_started(track, job, summarizer.name, fields)
+            result = await summarizer.summarize(job.request)
         html = render_document(
             result.fragment,
             job.images,
             RenderContext(job.project_name, summarizer.name, result.model, utcnow(), job.truncated),
         )
         track.annotate(model=result.model, output_bytes=len(summary_html_bytes(html)))
-        await _store_success(factory, summary_id, job.project_id, html, result.model)
-        track.status = SummaryMetricStatus.SUCCESS
+        if await _store_success(factory, summary_id, job.project_id, html, result.model):
+            track.status = SummaryMetricStatus.SUCCESS
+        else:
+            _taken_over(track, fields)
         return
     except (TimeoutError, SummarizerTimeout):
         track.status, error_code = SummaryMetricStatus.TIMEOUT, "provider_timeout"
@@ -305,26 +292,70 @@ async def _run(
         logger.error("summary job crashed", extra=fields, exc_info=True)
         track.status, error_code = SummaryMetricStatus.INTERNAL_ERROR, "internal_error"
     try:
-        await _store_failure(factory, summary_id, error_code)
+        if not await _store_failure(factory, summary_id, error_code):
+            _taken_over(track, fields)
     except Exception:  # e.g. the database is down; startup recovery fixes the row later
         logger.error("summary failure not stored", extra=fields, exc_info=True)
+
+
+def _annotate_started(
+    track: SummaryTrack, job: LoadedJob, provider: str, fields: dict[str, str]
+) -> None:
+    counts = {
+        "transcript_count": len(job.request.transcript_titles),
+        "image_count": len(job.images),
+        "input_chars": job.input_chars,
+        "truncated": job.truncated,
+    }
+    track.annotate(**counts)
+    logger.info("summary_started", extra={**fields, "provider": provider, **counts})
+
+
+def _taken_over(track: SummaryTrack, fields: dict[str, str]) -> None:
+    """The row is no longer active (stale-marked `interrupted`, or deleted with its project):
+    the job's result or error is discarded so it never overwrites what the client was told."""
+    track.status = SummaryMetricStatus.INTERRUPTED
+    logger.warning("summary result discarded: job was taken over", extra=fields)
+
+
+async def _transition(
+    session: AsyncSession, summary_id: uuid.UUID, from_statuses: tuple[str, ...], **values: Any
+) -> bool:
+    """`UPDATE ... WHERE id = :id AND status IN :from_statuses`; true if it hit the row."""
+    result = await session.execute(
+        update(Summary)
+        .where(Summary.id == summary_id, Summary.status.in_(from_statuses))
+        .values(**values)
+    )
+    return bool(result.rowcount)  # type: ignore[attr-defined]
 
 
 async def _load_and_mark_running(
     factory: SessionFactory, summary_id: uuid.UUID, settings: Settings
 ) -> LoadedJob | None:
+    """`pending` -> `running`, then the inputs; `None` if the row is gone or not active."""
     async with factory() as session:
-        summary = await session.get(Summary, summary_id)
-        if summary is None:
+        if not await _transition(
+            session, summary_id, (PENDING,), status=RUNNING, started_at=utcnow()
+        ):
             return None
-        project = await session.get(Project, summary.project_id)
-        if project is None:  # pragma: no cover - the FK cascade deletes the summary too
+        await session.commit()
+        project_id = await session.scalar(
+            select(Summary.project_id).where(Summary.id == summary_id)
+        )
+        project = await session.get(Project, project_id) if project_id else None
+        if project is None:  # deleted with its project meanwhile
             return None
-        summary.status, summary.started_at = RUNNING, utcnow()
         job = await _load_job(session, project, settings)
-        summary.truncated = job.truncated
-        summary.transcript_count = len(job.request.transcript_titles)
-        summary.image_count = len(job.images)
+        if not await _transition(
+            session,
+            summary_id,
+            (RUNNING,),
+            truncated=job.truncated,
+            transcript_count=len(job.request.transcript_titles),
+            image_count=len(job.images),
+        ):
+            return None
         await session.commit()
         return job
 
@@ -404,30 +435,47 @@ def _number(
 
 async def _store_success(
     factory: SessionFactory, summary_id: uuid.UUID, project_id: uuid.UUID, html: str, model: str
-) -> None:
-    """Mark succeeded and delete the project's older summaries in one transaction (AC5)."""
+) -> bool:
+    """Mark succeeded and delete the project's older, finished summaries in one transaction
+    (AC5). Only while the row is still `running`; false (nothing written) if it was taken over."""
     async with factory() as session:
-        summary = await session.get(Summary, summary_id)
-        if summary is None:  # the project was deleted while the provider worked
-            return
-        summary.status, summary.html, summary.model = SUCCEEDED, html, model
-        summary.error_code, summary.finished_at = None, utcnow()
-        await session.execute(
-            delete(Summary).where(Summary.project_id == project_id, Summary.id != summary_id)
+        stored = await _transition(
+            session,
+            summary_id,
+            (RUNNING,),
+            status=SUCCEEDED,
+            html=html,
+            model=model,
+            error_code=None,
+            finished_at=utcnow(),
         )
+        if stored:
+            await session.execute(
+                delete(Summary).where(
+                    Summary.project_id == project_id,
+                    Summary.id != summary_id,
+                    Summary.status.not_in(ACTIVE_STATUSES),  # never a newer, active job
+                )
+            )
         await session.commit()
+        return stored
 
 
 async def _store_failure(
     factory: SessionFactory, summary_id: uuid.UUID, error_code: SummaryErrorCode
-) -> None:
+) -> bool:
+    """Mark failed only while the row is still active; false if it was taken over."""
     async with factory() as session:
-        await session.execute(
-            update(Summary)
-            .where(Summary.id == summary_id)
-            .values(status=FAILED, error_code=error_code, finished_at=utcnow())
+        stored = await _transition(
+            session,
+            summary_id,
+            ACTIVE_STATUSES,
+            status=FAILED,
+            error_code=error_code,
+            finished_at=utcnow(),
         )
         await session.commit()
+        return stored
 
 
 async def _store_interrupted_on_cancel(

@@ -326,7 +326,10 @@ async def test_gemini_primary_timeout_then_fallback_http_error_is_a_provider_err
 @pytest.mark.anyio
 async def test_gemini_fallback_gets_only_the_remaining_budget() -> None:
     async def handler(request: httpx2.Request) -> httpx2.Response:
-        await asyncio.sleep(30)  # both models hang
+        if "/models/flash:" in str(request.url):
+            await asyncio.sleep(0.8)  # a slow 503 that uses most of the 1 s budget
+            return httpx2.Response(503)
+        await asyncio.sleep(30)  # the fallback hangs
         return gemini_ok()
 
     summarizer = GeminiSummarizer(
@@ -334,15 +337,16 @@ async def test_gemini_fallback_gets_only_the_remaining_budget() -> None:
         base_url=BASE,
         model="flash",
         fallback_model="flash-lite",
-        timeout_seconds=0.4,
-        primary_timeout_seconds=0.2,
+        timeout_seconds=1.0,
+        primary_timeout_seconds=0.9,
         transport=httpx2.MockTransport(handler),
     )
     began = time.monotonic()
 
     with pytest.raises(SummarizerTimeout):
         await summarizer.summarize(REQUEST)
-    assert time.monotonic() - began < 2  # bounded by the whole budget, not 2 x primary
+    # The fallback had only the remaining ~0.2 s, not a fresh 1 s (which would end at ~1.8 s).
+    assert time.monotonic() - began < 1.5
 
 
 @pytest.mark.parametrize(

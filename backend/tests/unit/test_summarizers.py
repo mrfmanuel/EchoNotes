@@ -4,9 +4,11 @@ The HTTP layer is mocked with `httpx2.MockTransport` (the respx equivalent for h
 ever reaches Gemini or Groq.
 """
 
+import asyncio
 import base64
 import json
 import logging
+import time
 from collections.abc import Callable
 
 import httpx2
@@ -25,7 +27,7 @@ from app.summarization import (
     build_summarizer,
 )
 from app.summarization.fake import FakeSummarizer
-from app.summarization.gemini import GeminiSummarizer
+from app.summarization.gemini import GeminiSummarizer, effective_primary_timeout
 from app.summarization.groq import GroqSummarizer
 
 GEMINI_KEY = "AIza-LEAKED-GEMINI-KEY"
@@ -198,27 +200,175 @@ async def test_gemini_without_a_fallback_model_does_not_retry() -> None:
     assert len(seen) == 1
 
 
+def _models(seen: list[httpx2.Request]) -> list[str]:
+    return [r.url.path.rsplit("/", 1)[-1].removesuffix(":generateContent") for r in seen]
+
+
 @pytest.mark.anyio
-@pytest.mark.parametrize("status", [402, 500, 400])
-async def test_gemini_other_errors_fail_without_fallback(status: int) -> None:
+@pytest.mark.parametrize("status", [429, 500, 503])
+async def test_gemini_429_500_503_fall_back_once_to_the_fallback_model(status: int) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if "/models/flash:" in str(request.url):
+            return httpx2.Response(status, json={"error": {"status": "UNAVAILABLE"}})
+        return gemini_ok("<p>from lite</p>")
+
+    summarizer, seen = gemini(handler)
+
+    result = await summarizer.summarize(REQUEST)
+
+    assert _models(seen) == ["flash", "flash-lite"]
+    assert result.model == "flash-lite" and result.fragment == "<p>from lite</p>"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status", [429, 500, 503])
+async def test_gemini_failure_on_both_models_is_a_provider_error_after_one_fallback(
+    status: int,
+) -> None:
+    summarizer, seen = gemini(lambda _r: httpx2.Response(status, text="SECRET-BODY"))
+
+    with pytest.raises(SummarizerError) as info:
+        await summarizer.summarize(REQUEST)
+    assert _models(seen) == ["flash", "flash-lite"]
+    assert info.value.status_code == status and "SECRET-BODY" not in str(info.value)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status", [402, 400, 401, 403, 404])
+async def test_gemini_402_and_other_4xx_fail_without_fallback(status: int) -> None:
     summarizer, seen = gemini(lambda _r: httpx2.Response(status, text="SECRET-BODY"))
 
     with pytest.raises(SummarizerError) as info:
         await summarizer.summarize(REQUEST)
     assert not isinstance(info.value, SummarizerRateLimited)
-    assert info.value.status_code == status and len(seen) == 1
+    assert info.value.status_code == status and _models(seen) == ["flash"]
     assert "SECRET-BODY" not in str(info.value)
 
 
+def _primary_raises(error: type[httpx2.TransportError]) -> Handler:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if "/models/flash:" in str(request.url):
+            raise error("primary failed", request=request)
+        return gemini_ok("<p>from lite</p>")
+
+    return handler
+
+
 @pytest.mark.anyio
-async def test_gemini_timeout_raises_summarizer_timeout() -> None:
+@pytest.mark.parametrize(
+    "error", [httpx2.ReadTimeout, httpx2.ConnectTimeout, httpx2.ConnectError, httpx2.ReadError]
+)
+async def test_gemini_primary_timeout_or_transport_error_falls_back_once(
+    error: type[httpx2.TransportError],
+) -> None:
+    summarizer, seen = gemini(_primary_raises(error))
+
+    result = await summarizer.summarize(REQUEST)
+
+    assert _models(seen) == ["flash", "flash-lite"]
+    assert result.model == "flash-lite" and result.fragment == "<p>from lite</p>"
+
+
+@pytest.mark.anyio
+async def test_gemini_hanging_primary_is_cut_at_the_primary_timeout_and_falls_back() -> None:
+    seen: list[str] = []
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request.url.path.rsplit("/", 1)[-1])
+        if "/models/flash:" in str(request.url):
+            await asyncio.sleep(30)  # the model hangs; only GEMINI_PRIMARY_TIMEOUT_SECONDS stops it
+        return gemini_ok("<p>from lite</p>")
+
+    summarizer = GeminiSummarizer(
+        api_key=SecretStr(GEMINI_KEY),
+        base_url=BASE,
+        model="flash",
+        fallback_model="flash-lite",
+        timeout_seconds=5,
+        primary_timeout_seconds=0.1,
+        transport=httpx2.MockTransport(handler),
+    )
+    began = time.monotonic()
+
+    result = await summarizer.summarize(REQUEST)
+
+    assert time.monotonic() - began < 3
+    assert seen == ["flash:generateContent", "flash-lite:generateContent"]
+    assert result.model == "flash-lite"
+
+
+@pytest.mark.anyio
+async def test_gemini_timeout_on_both_models_raises_summarizer_timeout() -> None:
     def handler(request: httpx2.Request) -> httpx2.Response:
         raise httpx2.ReadTimeout("slow", request=request)
 
-    summarizer, _ = gemini(handler)
+    summarizer, seen = gemini(handler)
 
     with pytest.raises(SummarizerTimeout):
         await summarizer.summarize(REQUEST)
+    assert _models(seen) == ["flash", "flash-lite"]
+
+
+@pytest.mark.anyio
+async def test_gemini_primary_timeout_then_fallback_http_error_is_a_provider_error() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if "/models/flash:" in str(request.url):
+            raise httpx2.ReadTimeout("slow", request=request)
+        return httpx2.Response(503)
+
+    summarizer, seen = gemini(handler)
+
+    with pytest.raises(SummarizerError) as info:
+        await summarizer.summarize(REQUEST)
+    assert info.value.status_code == 503 and _models(seen) == ["flash", "flash-lite"]
+
+
+@pytest.mark.anyio
+async def test_gemini_fallback_gets_only_the_remaining_budget() -> None:
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        if "/models/flash:" in str(request.url):
+            await asyncio.sleep(0.8)  # a slow 503 that uses most of the 1 s budget
+            return httpx2.Response(503)
+        await asyncio.sleep(30)  # the fallback hangs
+        return gemini_ok()
+
+    summarizer = GeminiSummarizer(
+        api_key=SecretStr(GEMINI_KEY),
+        base_url=BASE,
+        model="flash",
+        fallback_model="flash-lite",
+        timeout_seconds=1.0,
+        primary_timeout_seconds=0.9,
+        transport=httpx2.MockTransport(handler),
+    )
+    began = time.monotonic()
+
+    with pytest.raises(SummarizerTimeout):
+        await summarizer.summarize(REQUEST)
+    # The fallback had only the remaining ~0.2 s, not a fresh 1 s (which would end at ~1.8 s).
+    assert time.monotonic() - began < 1.5
+
+
+@pytest.mark.parametrize(
+    ("primary", "total", "expected"), [(40, 90, 40), (90, 90, 45), (120, 90, 45), (5, 6, 5)]
+)
+def test_primary_timeout_is_clamped_below_the_summary_timeout(
+    primary: float, total: float, expected: float
+) -> None:
+    assert effective_primary_timeout(primary, total) == expected
+
+
+def test_primary_timeout_setting_defaults_to_40_and_reaches_the_summarizer() -> None:
+    summarizer = build_summarizer(_settings(gemini_api_key=GEMINI_KEY))
+
+    assert _settings().gemini_primary_timeout_seconds == 40
+    assert isinstance(summarizer, GeminiSummarizer) and summarizer._primary_timeout == 40
+
+
+def test_without_a_fallback_the_primary_model_gets_the_whole_budget() -> None:
+    summarizer = build_summarizer(_settings(gemini_api_key=GEMINI_KEY, gemini_fallback_model=""))
+
+    assert isinstance(summarizer, GeminiSummarizer) and summarizer._primary_timeout == 90
 
 
 @pytest.mark.anyio
@@ -241,14 +391,24 @@ async def test_gemini_empty_or_invalid_responses_are_provider_errors(
 
 
 @pytest.mark.anyio
-async def test_gemini_connection_error_is_a_provider_error() -> None:
+async def test_gemini_connection_error_on_both_models_is_a_provider_error() -> None:
     def handler(request: httpx2.Request) -> httpx2.Response:
         raise httpx2.ConnectError("down", request=request)
 
-    summarizer, _ = gemini(handler)
+    summarizer, seen = gemini(handler)
 
     with pytest.raises(SummarizerError):
         await summarizer.summarize(REQUEST)
+    assert _models(seen) == ["flash", "flash-lite"]
+
+
+@pytest.mark.anyio
+async def test_gemini_empty_primary_response_does_not_fall_back() -> None:
+    summarizer, seen = gemini(lambda _r: httpx2.Response(200, json={"candidates": []}))
+
+    with pytest.raises(SummarizerError):
+        await summarizer.summarize(REQUEST)
+    assert _models(seen) == ["flash"]
 
 
 @pytest.mark.anyio

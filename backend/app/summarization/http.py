@@ -9,7 +9,12 @@ from typing import Any
 
 import httpx2
 
-from app.summarization.base import SummarizerError, SummarizerRateLimited, SummarizerTimeout
+from app.summarization.base import (
+    SummarizerError,
+    SummarizerRateLimited,
+    SummarizerTimeout,
+    SummarizerUnavailable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +42,7 @@ async def post_json(
             "summary provider unreachable",
             extra={"provider": provider, "error_type": type(exc).__name__},
         )
-        raise SummarizerError(provider) from None
+        raise SummarizerUnavailable(provider) from None
     return _parse(provider, response)
 
 

@@ -58,6 +58,10 @@ class SummarizerRateLimited(SummarizerError):
         super().__init__(provider, 429)
 
 
+class SummarizerUnavailable(SummarizerError):
+    """Connection or transport error (no HTTP response). Gemini retries once with the fallback."""
+
+
 class SummarizerTimeout(Exception):
     """The provider did not answer in time."""
 

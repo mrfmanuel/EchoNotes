@@ -26,6 +26,8 @@ class SummaryMetricStatus(StrEnum):
     PROVIDER_ERROR = "provider_error"
     TIMEOUT = "timeout"
     INTERNAL_ERROR = "internal_error"
+    # The row was no longer active (stale-marked `interrupted` or deleted): result discarded.
+    INTERRUPTED = "interrupted"
 
 
 @dataclass

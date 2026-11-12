@@ -2,6 +2,7 @@
 
 import asyncio
 import uuid
+from datetime import timedelta
 
 import httpx2
 import pytest
@@ -11,8 +12,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from alembic import command
+from app.config import get_settings
+from app.db.base import utcnow
 from app.db.models import Summary
 from app.main import create_app
+from app.services.summaries import stale_after
 from app.summarization import get_summarizer
 from tests.image_utils import unzip
 from tests.integration.conftest import alembic_config
@@ -127,6 +131,57 @@ async def test_restart_marks_running_summaries_failed_interrupted(
     assert latest["id"] == str(stale.id)
     assert latest["status"] == "failed" and latest["error_code"] == "interrupted"
     assert latest["finished_at"] is not None
+
+
+async def test_stale_running_summary_is_interrupted_and_replaced_under_the_unique_index(
+    pg_app: FastAPI, pg_client: httpx2.AsyncClient, pg_session: AsyncSession
+) -> None:
+    project = await create_project(pg_client)
+    await add_transcript(pg_client, project["id"])
+    stale = Summary(
+        project_id=uuid.UUID(project["id"]),
+        status="running",
+        provider="gemini",
+        created_at=utcnow() - stale_after(get_settings()) - timedelta(seconds=1),
+    )
+    pg_session.add(stale)
+    await pg_session.commit()
+
+    reported = (await pg_client.get(f"/api/projects/{project['id']}/summaries/latest")).json()
+    responses = await asyncio.gather(
+        *(pg_client.post(f"/api/projects/{project['id']}/summaries") for _ in range(3))
+    )
+
+    assert reported["status"] == "failed" and reported["error_code"] == "interrupted"
+    assert {r.status_code for r in responses} == {202}
+    new_ids = {r.json()["id"] for r in responses}
+    assert len(new_ids) == 1 and str(stale.id) not in new_ids
+    await wait_for_summary_jobs(pg_app)
+    summary = await poll_until_finished(pg_client, project["id"])
+    assert summary["id"] in new_ids and summary["status"] == "succeeded"
+
+
+async def test_post_alone_interrupts_a_stale_pending_summary_and_starts_a_new_job(
+    pg_app: FastAPI, pg_client: httpx2.AsyncClient, pg_session: AsyncSession
+) -> None:
+    project = await create_project(pg_client)
+    await add_transcript(pg_client, project["id"])
+    stale = Summary(
+        project_id=uuid.UUID(project["id"]),
+        status="pending",
+        provider="gemini",
+        created_at=utcnow() - stale_after(get_settings()) - timedelta(seconds=1),
+    )
+    pg_session.add(stale)
+    await pg_session.commit()
+
+    started = await pg_client.post(f"/api/projects/{project['id']}/summaries")
+
+    assert started.status_code == 202 and started.json()["status"] == "pending"
+    assert started.json()["id"] != str(stale.id)
+    await wait_for_summary_jobs(pg_app)
+    summary = await poll_until_finished(pg_client, project["id"])
+    assert summary["id"] == started.json()["id"] and summary["status"] == "succeeded"
 
 
 def test_summaries_migration_downgrades_and_upgrades(

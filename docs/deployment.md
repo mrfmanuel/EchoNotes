@@ -41,7 +41,8 @@ Render env vars per service (values live only in Render): `DATABASE_URL` (Neon c
 | `GEMINI_API_KEY` | empty | **secret** (Render env var / local `.env` only; never logged). Empty is valid and means `fake` under auto |
 | `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta` | not passed by compose (comes from `.env` if set) |
 | `GEMINI_MODEL` | `gemini-3.8-flash` | primary model |
-| `GEMINI_FALLBACK_MODEL` | `gemini-3.5-flash-lite` | retried once on 429; empty = no fallback |
+| `GEMINI_FALLBACK_MODEL` | `gemini-3.5-flash-lite` | tried once when the primary model times out, is unreachable (connection/transport error) or answers 429/500/503, with the rest of `SUMMARY_TIMEOUT_SECONDS`; 402 and other 4xx are not retried; empty = no fallback |
+| `GEMINI_PRIMARY_TIMEOUT_SECONDS` | `40` | per-attempt limit for `GEMINI_MODEL`, so a hanging primary leaves time for the fallback. Must be below `SUMMARY_TIMEOUT_SECONDS`, otherwise it is clamped to half of it. Without a fallback the primary gets the whole budget |
 | `GROQ_SUMMARY_MODEL` | `openai/gpt-oss-120b` | text-only Groq summaries; reuses `GROQ_API_KEY`, `GROQ_BASE_URL` |
 | `SUMMARY_TIMEOUT_SECONDS` | `90` | whole job, fallback included |
 | `SUMMARY_MAX_CHARS` | `60000` | total transcript characters sent; above it the content is cut and the summary says so |
@@ -51,11 +52,11 @@ Render env vars per service (values live only in Render): `DATABASE_URL` (Neon c
 
 `docker-compose.yml` passes these through with the same defaults as `backend/app/config.py` (never an empty string for a model or a number, which would override the app default or fail validation). `.env.example` lists them with comments and no values for secrets.
 
-**Gemini free tier "model overloaded" (503).** The free tier can answer 503 when the model is overloaded. The app then retries once with the Flash-Lite fallback (`GEMINI_FALLBACK_MODEL`), the same as for 429; this 503 fallback lands with [#64](https://github.com/mrfmanuel/EchoNotes/issues/64). If both fail, the job ends `failed` with `provider_error`, which the dev deploy smoke reports as a WARN, not a failed deploy.
+**Gemini free tier "model overloaded" (503) or hanging.** On the free tier the primary model can answer 503 when it is overloaded, or hang with no answer. The app then makes one attempt with the Flash-Lite fallback (`GEMINI_FALLBACK_MODEL`), the same as for 429. A hang is cut at `GEMINI_PRIMARY_TIMEOUT_SECONDS` (40 s), and the fallback gets what is left of `SUMMARY_TIMEOUT_SECONDS` (90 s) ([#64](https://github.com/mrfmanuel/EchoNotes/issues/64)). If the fallback also times out, the job ends `failed` with `provider_timeout`; if it gets an HTTP error, the job ends with `provider_error`. The dev deploy smoke reports both as a WARN, not a failed deploy.
 
 ### Summary jobs during a deploy
 
-Render deploys each service with zero downtime, so for a short time the old and the new instance both run. The new instance's startup recovery marks every `pending`/`running` summary as `interrupted` while the old instance may still be working on it (the old one can then still finish it). A job that the old instance **starts after** that recovery and that is still running when the old instance is stopped stays `running` forever: new `POST …/summaries` calls return that dead job until the next restart. This is tracked in [#64](https://github.com/mrfmanuel/EchoNotes/issues/64); details in [architecture.md](architecture.md#ai-project-summary-us-22) (*Known limits*). Until it is fixed, mitigate by avoiding summary generation during a deploy; if a project is stuck on "Generating…", a restart of the service (Render → Manual Deploy → Restart, or the next idle spin-down) marks the job `interrupted` and the user can retry.
+Render deploys each service with zero downtime, so for a short time the old and the new instance both run. The new instance's startup recovery marks every `pending`/`running` summary as `interrupted` while the old instance may still be working on it (the old one can then still finish it). A job that the old instance **starts after** that recovery and that is still running when the old instance is stopped is cancelled, and it tries to mark itself `interrupted`. If that best-effort write fails, the row is treated as stale once it is older than `SUMMARY_TIMEOUT_SECONDS` + 60 s (150 s by default). From then on, `GET …/summaries/latest` reports it as `failed`/`interrupted`, and the next `POST …/summaries` starts a new job ([#64](https://github.com/mrfmanuel/EchoNotes/issues/64)). No restart is needed. Details are in [architecture.md](architecture.md#ai-project-summary-us-22) (*Known limits*).
 
 ### GitHub secrets and variables (names only)
 

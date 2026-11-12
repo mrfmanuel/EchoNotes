@@ -53,7 +53,10 @@ class Settings(BaseSettings):
     gemini_api_key: SecretStr = SecretStr("")
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
     gemini_model: str = "gemini-3.8-flash"
-    gemini_fallback_model: str = "gemini-3.5-flash-lite"  # empty = no fallback on 429
+    gemini_fallback_model: str = "gemini-3.5-flash-lite"  # empty = no fallback
+    # Per-attempt limit for GEMINI_MODEL; the fallback gets the rest of SUMMARY_TIMEOUT_SECONDS.
+    # Not below SUMMARY_TIMEOUT_SECONDS? Clamped to half of it (see `effective_primary_timeout`).
+    gemini_primary_timeout_seconds: float = Field(default=40, gt=0)
     groq_summary_model: str = "openai/gpt-oss-120b"
     summary_timeout_seconds: float = Field(default=90, gt=0)  # the whole job, fallback included
     summary_max_chars: int = Field(default=60000, gt=0)  # total across all transcripts

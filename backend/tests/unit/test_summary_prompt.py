@@ -4,9 +4,10 @@ import io
 import os
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
-from PIL import Image
+from PIL import Image, JpegImagePlugin
 
 from app.summarization.base import SummaryImage
 from app.summarization.prompt import (
@@ -190,6 +191,63 @@ def test_large_jpegs_are_draft_decoded_to_the_target_size() -> None:
     assert mime == "image/jpeg"
     with Image.open(io.BytesIO(data)) as image:
         assert image.size == (600, 400)
+
+
+def test_jpeg_downscaling_calls_draft_with_the_target_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str | None, tuple[int, int] | None]] = []
+    original = JpegImagePlugin.JpegImageFile.draft
+
+    def spy(self: Any, mode: str | None, size: tuple[int, int] | None) -> Any:
+        calls.append((mode, size))
+        return original(self, mode, size)
+
+    monkeypatch.setattr(JpegImagePlugin.JpegImageFile, "draft", spy)
+
+    assert downscale_image(real_jpeg(3000, 2000), 600) is not None
+    assert downscale_image(real_png(3000, 2000), 600) is not None  # PNG: no draft
+
+    # Our explicit call comes first (`thumbnail` may call `draft` again internally).
+    assert calls and calls[0] == ("RGB", (600, 600))
+
+
+ORIENTATION_TAG = 0x0112
+
+
+def _sideways_jpeg(orientation: int) -> bytes:
+    """80x40 stored landscape, left half red and right half blue, with an EXIF orientation."""
+    image = Image.new("RGB", (80, 40), "blue")
+    image.paste("red", (0, 0, 40, 40))
+    exif = Image.Exif()
+    exif[ORIENTATION_TAG] = orientation
+    output = io.BytesIO()
+    image.save(output, format="JPEG", quality=95, exif=exif.tobytes())
+    return output.getvalue()
+
+
+def _is_red(pixel: tuple[int, ...]) -> bool:
+    return pixel[0] > 180 and pixel[2] < 80
+
+
+def test_exif_orientation_is_applied_before_downscaling_so_the_output_is_upright() -> None:
+    mime, data = downscale_image(_sideways_jpeg(6), max_px=20) or ("", b"")
+
+    assert mime == "image/jpeg"
+    with Image.open(io.BytesIO(data)) as image:
+        rgb = image.convert("RGB")
+        # Orientation 6 = rotate 90 degrees clockwise: portrait, the red half on top.
+        assert image.size == (10, 20)
+        assert _is_red(rgb.getpixel((5, 2)))  # type: ignore[arg-type]
+        assert not _is_red(rgb.getpixel((5, 17)))  # type: ignore[arg-type]
+        assert image.getexif().get(ORIENTATION_TAG, 1) == 1  # not rotated twice by viewers
+
+
+def test_images_without_an_orientation_tag_keep_their_layout() -> None:
+    mime, data = downscale_image(_sideways_jpeg(1), max_px=20) or ("", b"")
+
+    with Image.open(io.BytesIO(data)) as image:
+        assert image.size == (20, 10)
 
 
 def _noise_png(width: int, height: int, mode: str = "RGB") -> bytes:

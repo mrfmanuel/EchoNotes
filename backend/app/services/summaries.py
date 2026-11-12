@@ -11,10 +11,11 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Literal
+from datetime import timedelta
+from typing import Any, Literal
 
 from fastapi import status
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import Update, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -48,6 +49,8 @@ PENDING, RUNNING, SUCCEEDED, FAILED = "pending", "running", "succeeded", "failed
 ACTIVE_STATUSES = (PENDING, RUNNING)
 SummaryErrorCode = Literal["provider_error", "provider_timeout", "interrupted", "internal_error"]
 SUMMARY_NOT_FOUND = "Summary not found"
+STALE_GRACE_SECONDS = 60  # AC18: active rows older than SUMMARY_TIMEOUT_SECONDS + this are stale
+SHUTDOWN_WRITE_TIMEOUT_SECONDS = 2.0  # best-effort `interrupted` write when cancelled
 
 SessionFactory = async_sessionmaker[AsyncSession]
 logger = logging.getLogger(__name__)
@@ -62,6 +65,38 @@ async def _active_summary(session: AsyncSession, project_id: uuid.UUID) -> Summa
     )
 
 
+def stale_after(settings: Settings) -> timedelta:
+    """Age after which a `pending`/`running` row can no longer have a live job (AC18)."""
+    return timedelta(seconds=settings.summary_timeout_seconds + STALE_GRACE_SECONDS)
+
+
+def _is_stale(summary: Summary, max_age: timedelta) -> bool:
+    return summary.status in ACTIVE_STATUSES and summary.created_at < utcnow() - max_age
+
+
+async def _expire_if_stale(session: AsyncSession, summary: Summary, max_age: timedelta) -> bool:
+    """Persist a stale active row as `failed`/`interrupted` (orphaned job, AC18)."""
+    if not _is_stale(summary, max_age):
+        return False
+    await session.execute(_interrupt(Summary.id == summary.id))
+    await session.commit()
+    await session.refresh(summary)
+    logger.info(
+        "stale summary interrupted",
+        extra={"summary_id": str(summary.id), "project_id": str(summary.project_id)},
+    )
+    return True
+
+
+def _interrupt(*criteria: Any) -> Update:
+    """`UPDATE` active rows matching `criteria` to `failed`/`interrupted` (never a final row)."""
+    return (
+        update(Summary)
+        .where(*criteria, Summary.status.in_(ACTIVE_STATUSES))
+        .values(status=FAILED, error_code="interrupted", finished_at=utcnow())
+    )
+
+
 async def _require_project(session: AsyncSession, project_id: uuid.UUID) -> Project:
     project = await session.get(Project, project_id)
     if project is None:
@@ -70,9 +105,12 @@ async def _require_project(session: AsyncSession, project_id: uuid.UUID) -> Proj
 
 
 async def start_summary(
-    session: AsyncSession, project_id: uuid.UUID, provider: str
+    session: AsyncSession, project_id: uuid.UUID, provider: str, max_age: timedelta
 ) -> tuple[Summary, bool]:
-    """`(summary, created)`: a new `pending` job, or the active one (AC4). 404 / 409 (AC1)."""
+    """`(summary, created)`: a new `pending` job, or the active one (AC4). 404 / 409 (AC1).
+
+    An active row older than `max_age` is stale: it is marked `interrupted` first (AC18).
+    """
     await _require_project(session, project_id)
     count = await session.scalar(
         select(func.count(Transcript.id)).where(Transcript.project_id == project_id)
@@ -84,7 +122,7 @@ async def start_summary(
             "no_transcripts",
         )
     active = await _active_summary(session, project_id)
-    if active is not None:
+    if active is not None and not await _expire_if_stale(session, active, max_age):
         return active, False
     summary = Summary(
         project_id=project_id,
@@ -110,8 +148,11 @@ async def start_summary(
     return summary, True
 
 
-async def latest_summary(session: AsyncSession, project_id: uuid.UUID) -> Summary:
-    """The most recently created summary of the project (AC2)."""
+async def latest_summary(
+    session: AsyncSession, project_id: uuid.UUID, max_age: timedelta
+) -> Summary:
+    """The most recently created summary of the project (AC2); a stale active one is
+    persisted as `failed`/`interrupted` first, consistent with the next POST (AC18)."""
     await _require_project(session, project_id)
     summary = await session.scalar(
         select(Summary)
@@ -121,6 +162,7 @@ async def latest_summary(session: AsyncSession, project_id: uuid.UUID) -> Summar
     )
     if summary is None:
         raise ApiError(status.HTTP_404_NOT_FOUND, SUMMARY_NOT_FOUND, "summary_not_found")
+    await _expire_if_stale(session, summary, max_age)
     return summary
 
 
@@ -196,6 +238,7 @@ async def run_summary_job(
             await _run(factory, summarizer, summary_id, settings, track, fields)
         except asyncio.CancelledError:
             track.cancelled = True
+            await _store_interrupted_on_cancel(factory, summary_id, fields)
             raise
         logger.info(
             "summary_finished",
@@ -218,38 +261,25 @@ async def _run(
 ) -> None:
     error_code: SummaryErrorCode
     try:
-        job = await _load_and_mark_running(factory, summary_id, settings)
-        if job is None:  # deleted with its project before the job started
-            track.status = SummaryMetricStatus.INTERNAL_ERROR
-            return
-        track.annotate(
-            transcript_count=len(job.request.transcript_titles),
-            image_count=len(job.images),
-            input_chars=job.input_chars,
-            truncated=job.truncated,
-        )
-        logger.info(
-            "summary_started",
-            extra={
-                **fields,
-                "provider": summarizer.name,
-                "transcript_count": len(job.request.transcript_titles),
-                "image_count": len(job.images),
-                "input_chars": job.input_chars,
-                "truncated": job.truncated,
-            },
-        )
-        result = await asyncio.wait_for(
-            summarizer.summarize(job.request), settings.summary_timeout_seconds
-        )
+        # One deadline for preparation (images) and the provider, so a live job always ends
+        # well before it can look stale (created_at + SUMMARY_TIMEOUT_SECONDS + 60 s, AC18).
+        async with asyncio.timeout(settings.summary_timeout_seconds):
+            job = await _load_and_mark_running(factory, summary_id, settings)
+            if job is None:
+                _taken_over(track, fields)
+                return
+            _annotate_started(track, job, summarizer.name, fields)
+            result = await summarizer.summarize(job.request)
         html = render_document(
             result.fragment,
             job.images,
             RenderContext(job.project_name, summarizer.name, result.model, utcnow(), job.truncated),
         )
         track.annotate(model=result.model, output_bytes=len(summary_html_bytes(html)))
-        await _store_success(factory, summary_id, job.project_id, html, result.model)
-        track.status = SummaryMetricStatus.SUCCESS
+        if await _store_success(factory, summary_id, job.project_id, html, result.model):
+            track.status = SummaryMetricStatus.SUCCESS
+        else:
+            _taken_over(track, fields)
         return
     except (TimeoutError, SummarizerTimeout):
         track.status, error_code = SummaryMetricStatus.TIMEOUT, "provider_timeout"
@@ -262,26 +292,70 @@ async def _run(
         logger.error("summary job crashed", extra=fields, exc_info=True)
         track.status, error_code = SummaryMetricStatus.INTERNAL_ERROR, "internal_error"
     try:
-        await _store_failure(factory, summary_id, error_code)
+        if not await _store_failure(factory, summary_id, error_code):
+            _taken_over(track, fields)
     except Exception:  # e.g. the database is down; startup recovery fixes the row later
         logger.error("summary failure not stored", extra=fields, exc_info=True)
+
+
+def _annotate_started(
+    track: SummaryTrack, job: LoadedJob, provider: str, fields: dict[str, str]
+) -> None:
+    counts = {
+        "transcript_count": len(job.request.transcript_titles),
+        "image_count": len(job.images),
+        "input_chars": job.input_chars,
+        "truncated": job.truncated,
+    }
+    track.annotate(**counts)
+    logger.info("summary_started", extra={**fields, "provider": provider, **counts})
+
+
+def _taken_over(track: SummaryTrack, fields: dict[str, str]) -> None:
+    """The row is no longer active (stale-marked `interrupted`, or deleted with its project):
+    the job's result or error is discarded so it never overwrites what the client was told."""
+    track.status = SummaryMetricStatus.INTERRUPTED
+    logger.warning("summary result discarded: job was taken over", extra=fields)
+
+
+async def _transition(
+    session: AsyncSession, summary_id: uuid.UUID, from_statuses: tuple[str, ...], **values: Any
+) -> bool:
+    """`UPDATE ... WHERE id = :id AND status IN :from_statuses`; true if it hit the row."""
+    result = await session.execute(
+        update(Summary)
+        .where(Summary.id == summary_id, Summary.status.in_(from_statuses))
+        .values(**values)
+    )
+    return bool(result.rowcount)  # type: ignore[attr-defined]
 
 
 async def _load_and_mark_running(
     factory: SessionFactory, summary_id: uuid.UUID, settings: Settings
 ) -> LoadedJob | None:
+    """`pending` -> `running`, then the inputs; `None` if the row is gone or not active."""
     async with factory() as session:
-        summary = await session.get(Summary, summary_id)
-        if summary is None:
+        if not await _transition(
+            session, summary_id, (PENDING,), status=RUNNING, started_at=utcnow()
+        ):
             return None
-        project = await session.get(Project, summary.project_id)
-        if project is None:  # pragma: no cover - the FK cascade deletes the summary too
+        await session.commit()
+        project_id = await session.scalar(
+            select(Summary.project_id).where(Summary.id == summary_id)
+        )
+        project = await session.get(Project, project_id) if project_id else None
+        if project is None:  # deleted with its project meanwhile
             return None
-        summary.status, summary.started_at = RUNNING, utcnow()
         job = await _load_job(session, project, settings)
-        summary.truncated = job.truncated
-        summary.transcript_count = len(job.request.transcript_titles)
-        summary.image_count = len(job.images)
+        if not await _transition(
+            session,
+            summary_id,
+            (RUNNING,),
+            truncated=job.truncated,
+            transcript_count=len(job.request.transcript_titles),
+            image_count=len(job.images),
+        ):
+            return None
         await session.commit()
         return job
 
@@ -361,30 +435,63 @@ def _number(
 
 async def _store_success(
     factory: SessionFactory, summary_id: uuid.UUID, project_id: uuid.UUID, html: str, model: str
-) -> None:
-    """Mark succeeded and delete the project's older summaries in one transaction (AC5)."""
+) -> bool:
+    """Mark succeeded and delete the project's older, finished summaries in one transaction
+    (AC5). Only while the row is still `running`; false (nothing written) if it was taken over."""
     async with factory() as session:
-        summary = await session.get(Summary, summary_id)
-        if summary is None:  # the project was deleted while the provider worked
-            return
-        summary.status, summary.html, summary.model = SUCCEEDED, html, model
-        summary.error_code, summary.finished_at = None, utcnow()
-        await session.execute(
-            delete(Summary).where(Summary.project_id == project_id, Summary.id != summary_id)
+        stored = await _transition(
+            session,
+            summary_id,
+            (RUNNING,),
+            status=SUCCEEDED,
+            html=html,
+            model=model,
+            error_code=None,
+            finished_at=utcnow(),
         )
+        if stored:
+            await session.execute(
+                delete(Summary).where(
+                    Summary.project_id == project_id,
+                    Summary.id != summary_id,
+                    Summary.status.not_in(ACTIVE_STATUSES),  # never a newer, active job
+                )
+            )
         await session.commit()
+        return stored
 
 
 async def _store_failure(
     factory: SessionFactory, summary_id: uuid.UUID, error_code: SummaryErrorCode
-) -> None:
+) -> bool:
+    """Mark failed only while the row is still active; false if it was taken over."""
     async with factory() as session:
-        await session.execute(
-            update(Summary)
-            .where(Summary.id == summary_id)
-            .values(status=FAILED, error_code=error_code, finished_at=utcnow())
+        stored = await _transition(
+            session,
+            summary_id,
+            ACTIVE_STATUSES,
+            status=FAILED,
+            error_code=error_code,
+            finished_at=utcnow(),
         )
         await session.commit()
+        return stored
+
+
+async def _store_interrupted_on_cancel(
+    factory: SessionFactory, summary_id: uuid.UUID, fields: dict[str, str]
+) -> None:
+    """Shutdown (AC18): best effort, bounded by a short timeout; never raises or hangs."""
+    try:
+        async with asyncio.timeout(SHUTDOWN_WRITE_TIMEOUT_SECONDS):
+            async with factory() as session:
+                await session.execute(_interrupt(Summary.id == summary_id))
+                await session.commit()
+    except (Exception, asyncio.CancelledError) as exc:
+        logger.warning(
+            "summary interruption not stored",
+            extra={**fields, "error_type": type(exc).__name__},
+        )
 
 
 # --- Lifecycle ----------------------------------------------------------------------------
@@ -396,14 +503,12 @@ async def recover_interrupted(factory: SessionFactory) -> int:
     Rolling-deploy caveat: this assumes no other instance is still running jobs. During a
     zero-downtime deploy the new instance would mark the old instance's in-flight jobs as
     `interrupted` (the old one may then still overwrite them with its result). That is fine for
-    our single Render instance; #60 documents it in docs/deployment.md.
+    our single Render instance; #60 documents it in docs/deployment.md. A job that starts on the
+    old instance after this ran is caught by the stale check in `start_summary` /
+    `latest_summary` and by the shutdown write in `run_summary_job` (#64).
     """
     async with factory() as session:
-        result = await session.execute(
-            update(Summary)
-            .where(Summary.status.in_(ACTIVE_STATUSES))
-            .values(status=FAILED, error_code="interrupted", finished_at=utcnow())
-        )
+        result = await session.execute(_interrupt())
         await session.commit()
     count = int(result.rowcount)  # type: ignore[attr-defined]
     logger.info("summary recovery finished", extra={"interrupted_count": count})
@@ -411,7 +516,7 @@ async def recover_interrupted(factory: SessionFactory) -> int:
 
 
 async def cancel_summary_tasks(tasks: set[asyncio.Task[None]]) -> None:
-    """Shutdown: cancel running jobs (the next startup marks them `interrupted`)."""
+    """Shutdown: cancel running jobs; each one tries to mark itself `interrupted` (AC18)."""
     pending = list(tasks)
     for task in pending:
         task.cancel()

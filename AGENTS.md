@@ -4,7 +4,7 @@ Instructions for every AI coding agent (and human) working in this repo. Keep th
 
 ## Project
 
-**EchoNotes** is a web app that turns audio into organized text notes. Projects act as folders. Inside one you upload or record audio, get a transcript (Groq Whisper, or a deterministic `fake` provider), edit, copy or download it (`.md`/`.txt`), attach screenshots (picker or Ctrl+V), and export the project as a ZIP. This is the final project for the AI Dev Tools Zoomcamp 2026.
+**EchoNotes** is a web app that turns audio into organized text notes. Projects act as folders. Inside one you upload or record audio, get a transcript (Groq Whisper, or a deterministic `fake` provider), edit, copy or download it (`.md`/`.txt`), attach screenshots (picker or Ctrl+V), export the project as a ZIP, and generate an AI summary of the whole project as one HTML page (pluggable `Summarizer`: `gemini`, `groq` or `fake`; bonus US-22). This is the final project for the AI Dev Tools Zoomcamp 2026.
 
 ## Read these docs (modular context)
 
@@ -99,6 +99,7 @@ Every acceptance criterion has evidence. Tests are written with the code and pas
 - **Never persist raw audio.** Process it in memory or a temp file and discard it in `finally`.
 - Validate uploads by size and content type (images by magic bytes).
 - Tests and CI never call the real Groq API. Use `TRANSCRIBER_PROVIDER=fake`. (The post-deploy smoke test against dev/prod uses the deployed service's own Groq provider with a 1 s silent clip; CI never holds the Groq key.)
+- AI summaries send project content to the configured LLM provider. Tests and CI use `SUMMARIZER_PROVIDER=fake` (auto: `fake` without `GEMINI_API_KEY`). Never log prompts, model output or images. Model HTML is always sanitized server-side before it is stored or shown.
 - Telemetry follows the same rules as logs: IDs, sizes, durations, status, provider only (privacy tests enforce it).
 - The on-call agent never gets production credentials; its autonomy policy is enforced in `incident-response/responder.py`, not in the prompt. Never merge a chaos branch.
 - Never print deploy hooks, database URLs or `.env*` values. Deploy hooks are GitHub secrets.

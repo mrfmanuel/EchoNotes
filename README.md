@@ -13,10 +13,11 @@
 
 Final project for the [AI Dev Tools Zoomcamp 2026](https://courses.datatalks.club/ai-dev-tools-2026/). Built with a team of AI agents (Claude Code subagents) working through a [public issue tracker](https://github.com/mrfmanuel/EchoNotes/issues).
 
-> **Status: v1.0.0 (end of prompt P4: every rubric criterion delivered).** The app works end to end and is live on Render (dev + prod, each with its own Neon Postgres).
+> **Status: v1.1.0. Every rubric criterion was delivered in v1.0.0 (prompt P4). v1.1.0 adds the P5 bonus: an AI-generated HTML project summary.** The app works end to end and is live on Render (dev + prod, each with its own Neon Postgres).
 > - **CI/CD:** CI runs on every PR. A green CI on `main` deploys dev automatically. Prod is promoted manually behind an approval gate, with automatic rollback.
 > - **Telemetry:** the key journey emits OpenTelemetry traces, metrics and logs that share a trace ID, viewable in a local Grafana stack.
 > - **Alerting:** a user-impact alert wakes an **on-call agent**. The agent investigates from evidence, fixes the bug in an isolated worktree under a policy enforced in code, opens a PR and verifies recovery. This was demonstrated for real and the evidence is committed.
+> - **Bonus (P5):** **Generate summary** turns a project's transcripts and screenshots into one self-contained HTML summary written by Gemini, with Flash-Lite as automatic fallback. It is shown in a sandboxed viewer, downloadable, and included in the ZIP. Project content is sent to the AI provider ([privacy](#expected-behavior)).
 
 ## How to review this project in 10 minutes
 
@@ -33,6 +34,7 @@ Final project for the [AI Dev Tools Zoomcamp 2026](https://courses.datatalks.clu
 | 7–8 | **Alert → on-call agent → fix, in one command:** injects a bug on a throwaway branch, fires the alert and lets the responder run headless Claude Code, then verifies recovery (about 5 min; needs `gh` and `claude` logged in) | `make incident` · cleanup `make incident-cleanup` · [on-call.md](docs/on-call.md) |
 | 9 | **Read the incident that already happened:** alert, evidence, model and configuration, policy decision, commands, recovery | [operations-and-security-report.md](docs/operations-and-security-report.md) · [INC-20261111-052713](incident-response/incidents/INC-20261111-052713/) · responder PR [#56](https://github.com/mrfmanuel/EchoNotes/pull/56) |
 | 10 | **How AI built it:** prompts, agents, what went wrong, what humans verified | [ai-usage-report.md](docs/ai-usage-report.md) · [prompts/](prompts/) |
+| Bonus | **AI summary:** open a project with at least one transcript, click **Generate summary**, then **View summary** or **Download summary.html**. It uses real Gemini on the live demo and the `fake` provider locally without a key | [US-22](docs/product-spec.md#us-22) · [screenshots](#ai-project-summary-bonus-p5) |
 
 ---
 
@@ -57,6 +59,7 @@ See the personas in the [product spec](docs/product-spec.md#2-personas).
 | Transcripts | View, edit title and text, **copy to clipboard**, **download `.md` / `.txt`**, delete | [US-08–11](docs/product-spec.md#us-08) |
 | Screenshots | Attach png / jpg / webp (≤ 5 MB) with the file picker **or Ctrl+V paste**, link one to a transcript, thumbnail gallery, delete | [US-12–15](docs/product-spec.md#33-screenshots) |
 | Export | Download a project as a ZIP: `<slug>/README.md`, `transcripts/*.md` and `*.txt`, `screenshots/*` | [US-16](docs/product-spec.md#us-16) |
+| AI summary (bonus) | **Generate summary** sends all transcripts and screenshots to an LLM in the background. The result is one HTML page with an overview, key points, decisions and action items, one section per transcript, and the screenshots placed where they belong with captions, in the transcripts' language. It is shown in a sandboxed viewer, downloadable as `summary.html`, and included in the ZIP | [US-22](docs/product-spec.md#us-22) |
 | Health | `GET /api/health` → status, version, database, deployed commit, environment (also in the UI footer) | [US-17](docs/product-spec.md#us-17) |
 
 ## Expected behavior
@@ -65,6 +68,7 @@ See the personas in the [product spec](docs/product-spec.md#2-personas).
 - Invalid files are rejected with clear messages (`415` for a wrong type, `413` for a file that is too large). Provider failures show a retry hint (`502` / `504`) and never leave an empty transcript behind.
 - **Privacy:** raw audio is **never stored**. It is discarded right after transcription. Transcript text and file contents are **never written to logs or telemetry**.
 - Transcription goes through a pluggable `Transcriber`: **`groq`** (Groq Whisper `whisper-large-v3-turbo`) for real use, and a deterministic **`fake`** provider so the app, the tests and CI run without an API key.
+- **AI summary privacy:** generating a summary **sends the project's transcripts and screenshots to the configured LLM provider**. On Gemini's free tier, Google may use that data to improve its products, so don't use it for sensitive content (a note next to the button says so). The model's HTML is sanitized server-side with an allowlist and shown in an `<iframe sandbox>` with no scripts. Prompts, model output and images are never logged or sent to telemetry.
 - **Non-goals:** accounts/auth, sharing, real-time streaming, speaker diarization, mobile apps. The app has **no authentication**, so do not put sensitive audio on a public deployment.
 
 Full acceptance criteria (Given/When/Then): [docs/product-spec.md](docs/product-spec.md). API contract: [openapi.yaml](openapi.yaml).
@@ -78,6 +82,14 @@ Full acceptance criteria (Given/When/Then): [docs/product-spec.md](docs/product-
 | ![Transcript editor with copy and downloads](docs/images/03-transcript.png) | ![Project page on a phone-sized screen](docs/images/04-project-mobile.png) |
 
 The transcript shown was produced by the real Groq provider from a synthesized speech clip during the P2 verification.
+
+### AI project summary (bonus, P5)
+
+| Summary viewer in the app (real Gemini, automatic fallback to Flash-Lite) | A screenshot placed in its section with a generated caption |
+|---|---|
+| ![Generate summary panel with the sandboxed summary viewer](docs/images/09-ai-summary.png) | ![Downloaded summary.html with an embedded screenshot and caption](docs/images/10-ai-summary-figure.png) |
+
+Generated locally from a demo project (two edited meeting transcripts, two screenshots) during the P5 verification.
 
 ### Observability and on-call (INC-20261111-052713, live demo)
 
@@ -96,6 +108,10 @@ flowchart LR
     A --> T{Transcriber}
     T -->|groq| G[Groq Whisper API]
     T -->|fake| F[Deterministic fake]
+    A --> S{Summarizer}
+    S -->|gemini| GM[Gemini API<br/>Flash → Flash-Lite fallback]
+    S -->|groq| GQ[Groq chat, text only]
+    S -->|fake| SF[Deterministic fake]
 ```
 
 ```mermaid
@@ -195,11 +211,11 @@ The 12 criteria of the [course project](https://github.com/DataTalksClub/ai-dev-
 | # | Criterion | Evidence | Self-score |
 |---|---|---|---|
 | 1 | Problem description | This README: [problem](#the-problem), [who it is for](#who-it-is-for), [functionality](#functionality), [expected behavior](#expected-behavior), [screenshots](#screenshots) | **2 / 2** |
-| 2 | Product specification | [docs/product-spec.md](docs/product-spec.md) (US-01–US-21 with Given/When/Then ACs, NFRs) + [openapi.yaml](openapi.yaml) (contract-tested). Public tracker: [issues](https://github.com/mrfmanuel/EchoNotes/issues?q=is%3Aissue), [milestones M1–M4](https://github.com/mrfmanuel/EchoNotes/milestones?state=closed), [project board](https://github.com/users/mrfmanuel/projects/2). Every issue has an AC checklist; agents groomed the issues, linked PRs to them and closed them with evidence comments. The AC evidence for each issue is in its closing comment and in the QA report on its PR | **2 / 2** |
-| 3 | Agent team specification | [.claude/agents/](.claude/agents/) (product-manager, software-engineer, qa-engineer, devops-sre) + [docs/agent-team.md](docs/agent-team.md) (roles, hand-offs, diagram). Every PR (#36–#55) followed PM grooming → engineer → independent `qa-engineer` report → merge. QA requested changes on 4 PRs (#38, #50, #52, #53) and found real defects each time. Details in the [AI usage report](docs/ai-usage-report.md) | **2 / 2** |
+| 2 | Product specification | [docs/product-spec.md](docs/product-spec.md) (US-01–US-22 with Given/When/Then ACs, NFRs) + [openapi.yaml](openapi.yaml) (contract-tested). Public tracker: [issues](https://github.com/mrfmanuel/EchoNotes/issues?q=is%3Aissue), [milestones M1–M5](https://github.com/mrfmanuel/EchoNotes/milestones?state=closed), [project board](https://github.com/users/mrfmanuel/projects/2). Every issue has an AC checklist; agents groomed the issues, linked PRs to them and closed them with evidence comments. The AC evidence for each issue is in its closing comment and in the QA report on its PR | **2 / 2** |
+| 3 | Agent team specification | [.claude/agents/](.claude/agents/) (product-manager, software-engineer, qa-engineer, devops-sre) + [docs/agent-team.md](docs/agent-team.md) (roles, hand-offs, diagram). Every PR (#36–#65, except the on-call agent's chaos-branch PR #56) followed PM grooming → engineer → independent `qa-engineer` report → merge. QA requested changes on 8 PRs (#38, #50, #52, #53, #61, #62, #63, #65) and found real defects each time. Details in the [AI usage report](docs/ai-usage-report.md) | **2 / 2** |
 | 4 | Context management | [AGENTS.md](AGENTS.md) (imported by [CLAUDE.md](CLAUDE.md)) → modular docs: [process](docs/process.md), [agent team](docs/agent-team.md), [architecture](docs/architecture.md), [testing](docs/testing.md), [deployment](docs/deployment.md), [release](docs/release-process.md), [observability](docs/observability.md), [on-call](docs/on-call.md) | **2 / 2** |
 | 5 | Application | FastAPI + React SPA + Postgres, end to end. The frontend calls a typed `/api` client and data persists in Postgres. One command: `docker compose up --build` → <http://localhost:8000> ([screenshots](#screenshots), live: <https://echonotes-prod.onrender.com>) | **2 / 2** |
-| 6 | Testing | **713 tests**: 456 backend unit + 38 backend integration (real Postgres) + 136 frontend (Vitest) + 83 on-call responder (stub agent). Also a contract test against `openapi.yaml`, privacy tests for logs and telemetry, and a smoke script. **One command, `make test`**, passes locally and in CI ([docs/testing.md](docs/testing.md)) | **2 / 2** |
+| 6 | Testing | **904 tests**: 608 backend unit + 45 backend integration (real Postgres) + 168 frontend (Vitest) + 83 on-call responder (stub agent). Also a contract test against `openapi.yaml`, privacy tests for logs and telemetry, and a smoke script. **One command, `make test`**, passes locally and in CI ([docs/testing.md](docs/testing.md)) | **2 / 2** |
 | 7 | Containerization | Multi-stage [Dockerfile](Dockerfile): SPA + API in one non-root image, migrations on start, HEALTHCHECK. [docker-compose.yml](docker-compose.yml) adds Postgres 16 and starts the full system with one command and no `.env`; the `observability` profile adds Grafana LGTM. CI builds the image and smoke-tests it | **2 / 2** |
 | 8 | Deployment | **Live:** prod <https://echonotes-prod.onrender.com>, dev <https://echonotes-dev.onrender.com>. Render Docker services with a separate Neon Postgres per environment; `/api/health` shows the deployed commit ([docs/deployment.md](docs/deployment.md)) | **2 / 2** |
 | 9 | CI/CD | [CI](.github/workflows/ci.yml) on every PR (required checks on `main`). CD: [deploy-dev](.github/workflows/deploy-dev.yml) runs **automatically** after a green CI on `main`; [deploy-prod](.github/workflows/deploy-prod.yml) is **manual, behind a required-reviewer approval**, with auto-rollback; [rollback](.github/workflows/rollback.yml) was tested. Real runs: [release-process.md → evidence](docs/release-process.md#evidence-real-runs-2026-11-1011) | **3 / 3** |
@@ -208,10 +224,13 @@ The 12 criteria of the [course project](https://github.com/DataTalksClub/ai-dev-
 | 12 | On-call agent | The alert wakes [`responder.py`](incident-response/responder.py). It collects evidence, runs **headless Claude Code** in an isolated worktree, and checks the result against a policy enforced in code. The agent **fixed the bug**: PR [#56](https://github.com/mrfmanuel/EchoNotes/pull/56), rebuild, recovery verified. The PR targeted the throwaway chaos branch and was closed after verification, because the injected bug never reached `main`. Saved evidence: [INC-20261111-052713](incident-response/incidents/INC-20261111-052713/), plus a real escalation in [INC-20261111-051629](incident-response/incidents/INC-20261111-051629/) ([docs/on-call.md](docs/on-call.md), [operations-and-security-report.md](docs/operations-and-security-report.md)) | **2 / 2** |
 | | **Total** | | **24 / 24** |
 
+**Bonus beyond the rubric (P5, v1.1.0):** the AI-generated project summary ([US-22](docs/product-spec.md#us-22), milestone M5). The scores above are unchanged; the bonus is reported separately in the [AI usage report](docs/ai-usage-report.md#p5--bonus-ai-generated-html-project-summary-2026-11-1112).
+
 Known limits, kept honest:
 - The live demo has no authentication.
 - Prod telemetry is optional and not wired up; the local stack is the UI. Grafana Cloud is the documented next step.
 - The on-call demo runs against the local incident stack, not Render prod.
+- The AI summary sends project content to Gemini (free tier: Google may use it). It is opt-in per click, and the UI and docs say so.
 - There is no availability alert yet ([#54](https://github.com/mrfmanuel/EchoNotes/issues/54), `future`).
 
 ## License
